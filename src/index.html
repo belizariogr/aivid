@@ -256,6 +256,7 @@
     <dialog id="character-dialog">
       <form id="character-form">
         <h2>Seu personagem</h2>
+        <img id="character-photo" hidden alt="" />
         <label>Nome<input id="character-name" required maxlength="100" /></label
         ><label
           >Aparência e personalidade<textarea
@@ -264,9 +265,14 @@
             placeholder="Capivara marrom-canela de jardineira verde. Curiosa, calma e expressiva…"
           ></textarea>
         </label>
-        <button type="button" id="character-export" class="secondary small">
-          Salvar imagem no disco…
-        </button>
+        <div class="scene-actions">
+          <button type="button" id="character-replace" class="secondary small">
+            Trocar foto…
+          </button>
+          <button type="button" id="character-export" class="secondary small">
+            Salvar imagem no disco…
+          </button>
+        </div>
         <div class="dialog-actions">
           <button type="button" id="character-remove" class="danger">
             Remover</button
@@ -361,6 +367,13 @@
       <img id="environment-draft" alt="Prévia do ambiente gerado" hidden />
       <p id="environment-status" role="status"></p>
       <div class="dialog-actions">
+        <button
+          id="environment-abort"
+          class="secondary small stop-button"
+          hidden
+        >
+          Abortar prévia
+        </button>
         <button id="environment-generate" class="secondary">
           Gerar prévia
         </button>

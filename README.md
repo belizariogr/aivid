@@ -44,7 +44,7 @@ O empacotamento usa Node 24 via `npx`, sem trocar o Node global da máquina. O a
 ## Fluxo recomendado
 
 1. Crie um projeto. Use **Pré-prompt do projeto** para definir estilo, câmera, iluminação e outras instruções recorrentes. O Aivid inclui esse texto nas prévias, nos ambientes e nos vídeos. Nos cartões das cenas, escreva apenas o que muda ou acontece.
-2. Adicione uma imagem de cada personagem. Clique nela para editar os dados ou salvar uma cópia da imagem no disco. Use **Abrir pasta de arquivos** para acessar as imagens armazenadas no projeto.
+2. Adicione uma imagem de cada personagem. Clique nela para ver a foto inteira, trocar a imagem, editar os dados ou salvar uma cópia no disco. Use **Abrir pasta de arquivos** para acessar as imagens armazenadas no projeto.
 3. Adicione cenas, escreva o prompt de cada uma e marque os personagens presentes.
 4. No cartão da cena, use **Gerar ambiente** para criar um quadro inicial pelo texto, com uma referência opcional. Ajuste o prompt e gere novas prévias até aprovar uma. O quadro aprovado entra na biblioteca do projeto e pode ser escolhido em outras cenas. Também é possível importar um quadro pronto.
 5. Escolha resolução, duração e pasta de saída.
@@ -100,7 +100,7 @@ O Aivid se conecta somente ao backend do LTX em `127.0.0.1`. Descobre a porta no
 
 Use um Aivid por vez e evite iniciar gerações simultaneamente pela interface do LTX. O LTX não oferece um bloqueio de fila exclusivo para aplicativos externos.
 
-Se fechar o Aivid ou o LTX durante uma geração, ela pode ser interrompida. Na próxima abertura, trabalhos incompletos ficam marcados como interrompidos, sem reiniciar automaticamente. Deixe o Mac na tomada, com a tampa aberta e ventilação livre para trabalho noturno.
+**Abortar** interrompe a geração em andamento. Depois, use **Excluir geração** para mover os clipes correspondentes para o Lixo. Ao fechar o Aivid normalmente, o app cancela suas gerações e aguarda o processo encerrar. Se o Aivid ou o LTX for encerrado à força, a geração pode ser interrompida. Na próxima abertura, trabalhos incompletos ficam marcados como interrompidos, sem reiniciar automaticamente. Deixe o Mac na tomada, com a tampa aberta e ventilação livre para trabalho noturno.
 
 ## Desenvolvimento e validação
 

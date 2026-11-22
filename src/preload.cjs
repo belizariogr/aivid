@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld("aivid", {
   editCharacter: (id, cid, p) => invoke("edit-character", id, cid, p),
   openProjectAssets: (id) => invoke("open-project-assets", id),
   exportCharacterImage: (id, cid) => invoke("export-character-image", id, cid),
+  replaceCharacterPhoto: (id, cid) =>
+    invoke("replace-character-photo", id, cid),
+  characterPhoto: (id, cid) => invoke("character-photo", id, cid),
   removeCharacter: (id, cid) => invoke("remove-character", id, cid),
   sceneImage: (id, sid) => invoke("scene-image", id, sid),
   chooseEnvironment: (id) => invoke("scene-image", id),
@@ -20,6 +23,7 @@ contextBridge.exposeInMainWorld("aivid", {
   environmentReference: (id, sid) => invoke("environment-reference", id, sid),
   generateEnvironment: (id, sid, input) =>
     invoke("generate-environment", id, sid, input),
+  cancelEnvironment: () => invoke("cancel-environment"),
   approveEnvironment: (id, sid, name) =>
     invoke("approve-environment", id, sid, name),
   connect: () => invoke("connect"),
@@ -27,6 +31,7 @@ contextBridge.exposeInMainWorld("aivid", {
   enqueue: (id, sceneId, continuous) =>
     invoke("enqueue", id, sceneId, continuous),
   cancel: (id) => invoke("cancel", id),
+  deleteJob: (id) => invoke("delete-job", id),
   saveClipFrame: (id, index, position, name) =>
     invoke("save-clip-frame", id, index, position, name),
   openOutput: (id, r) => invoke("open-output", id, r),

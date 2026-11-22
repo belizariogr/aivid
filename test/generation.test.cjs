@@ -12,6 +12,16 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
   fs.writeFileSync(source, "generated video bytes");
   const handlers = new Map(),
     requests = [];
+  const events = new Map();
+  let pendingRender, onRenderStarted, finishQuit;
+  const renderStarted = new Promise((resolve) => {
+    onRenderStarted = resolve;
+  });
+  const quitFinished = new Promise((resolve) => {
+    finishQuit = resolve;
+  });
+  let holdRender = false;
+  let abortCount = 0;
   class FakeEngine {
     async generateEnvironment(request) {
       assert.match(request.prompt, /cartoon/);
@@ -26,7 +36,18 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
     }
     async generate(request) {
       requests.push(request);
+      if (holdRender) {
+        return new Promise((resolve) => {
+          pendingRender = resolve;
+          onRenderStarted();
+        });
+      }
       return { status: "complete", video_path: source };
+    }
+    async cancel() {
+      abortCount++;
+      pendingRender({ status: "cancelled" });
+      return { status: "cancelling" };
     }
   }
   class Window {
@@ -49,11 +70,15 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
       requestSingleInstanceLock() {
         return true;
       },
-      on() {},
+      on(name, fn) {
+        events.set(name, fn);
+      },
       whenReady() {
         return Promise.resolve();
       },
-      quit() {},
+      quit() {
+        finishQuit();
+      },
     },
     BrowserWindow: Window,
     ipcMain: {
@@ -77,7 +102,9 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
       }),
     },
     dialog: {},
-    shell: {},
+    shell: {
+      trashItem: async (file) => fs.renameSync(file, file + ".trashed"),
+    },
   };
   const original = Module._load,
     enginePath = require.resolve("../src/ltx.cjs"),
@@ -217,6 +244,42 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
   assert.equal(tooLong.ok, false);
   assert.match(tooLong.error, /ultrapassa 20 s/);
   assert.equal((await invoke("library")).jobs.length, 3);
+
+  const generated = jobs[2];
+  const unrelated = path.join(generated.folder, "meu-video.mp4");
+  fs.writeFileSync(unrelated, "extra");
+  electron.dialog.showMessageBox = async () => ({ response: 1 });
+  assert.equal(await invoke("delete-job", generated.id), true);
+  assert.ok(fs.existsSync(unrelated));
+  assert.ok(fs.existsSync(frame.image));
+  assert.ok(fs.existsSync(generated.output + ".trashed"));
+  assert.ok(
+    fs.existsSync(path.join(generated.folder, "sequencia.json.trashed")),
+  );
+  assert.equal((await invoke("library")).jobs.length, 2);
+
+  holdRender = true;
+  const runningId = await invoke("enqueue", p.id, p.scenes[0].id);
+  await renderStarted;
+  const queuedId = await invoke("enqueue", p.id, p.scenes[1].id);
+  let prevented = false;
+  events.get("before-quit")({
+    preventDefault() {
+      prevented = true;
+    },
+  });
+  await quitFinished;
+  assert.equal(prevented, true);
+  assert.equal(abortCount, 1);
+  const jobsAfterQuit = (await invoke("library")).jobs;
+  assert.equal(
+    jobsAfterQuit.find((job) => job.id === runningId).status,
+    "cancelled",
+  );
+  assert.equal(
+    jobsAfterQuit.find((job) => job.id === queuedId).status,
+    "cancelled",
+  );
 
   const bad = await handlers
     .get("library")({ senderFrame: { url: "https://example.com" } })

@@ -204,7 +204,7 @@ function renderJobs() {
                       100,
                   ),
                 );
-          return `<article class="job" data-id="${esc(j.id)}"><div class="job-top"><div><div class="job-title">${esc(j.scenes.length === 1 ? j.scenes[0].name : j.projectName)}</div><div class="job-meta">${j.scenes.length} cena${j.scenes.length === 1 ? "" : "s"} · ${esc(j.project.settings.resolution)} · ${new Date(j.createdAt).toLocaleString("pt-BR")}</div></div><span class="job-status">${labels[j.status] || esc(j.status)}</span></div>${busy ? `<progress max="100" value="${progress}"></progress>` : ""}${j.error ? `<p class="job-error">${esc(j.error)}</p>` : ""}<div class="job-bottom"><p>${j.status === "running" ? `Cena ${j.scene || 1} de ${j.scenes.length} · ${progress}%` : j.status === "queued" ? "Aguardando sua vez" : `${j.files.length} clipe(s) salvo(s)${j.elapsedSeconds ? " · " + Math.round(j.elapsedSeconds / 60) + " min" : ""}`}<br>${j.folder ? esc(j.folder) : ""}</p><div class="job-actions">${j.output ? '<button data-action="play" class="small secondary">Abrir vídeo</button>' : ""}${j.files.length ? '<button data-action="frame" class="small secondary">Salvar quadro</button>' : ""}${j.folder ? '<button data-action="folder" class="small secondary">Ver clipes ↗</button>' : ""}${busy ? '<button data-action="cancel" class="small secondary">Cancelar</button>' : ""}</div></div></article>`;
+          return `<article class="job" data-id="${esc(j.id)}"><div class="job-top"><div><div class="job-title">${esc(j.scenes.length === 1 ? j.scenes[0].name : j.projectName)}</div><div class="job-meta">${j.scenes.length} cena${j.scenes.length === 1 ? "" : "s"} · ${esc(j.project.settings.resolution)} · ${new Date(j.createdAt).toLocaleString("pt-BR")}</div></div><span class="job-status">${busy && j.cancelRequested ? "Abortando…" : labels[j.status] || esc(j.status)}</span></div>${busy ? `<progress max="100" value="${progress}"></progress>` : ""}${j.error ? `<p class="job-error">${esc(j.error)}</p>` : ""}<div class="job-bottom"><p>${j.status === "running" ? `Cena ${j.scene || 1} de ${j.scenes.length} · ${progress}%` : j.status === "queued" ? "Aguardando sua vez" : `${j.files.length} clipe(s) salvo(s)${j.elapsedSeconds ? " · " + Math.round(j.elapsedSeconds / 60) + " min" : ""}`}<br>${j.folder ? esc(j.folder) : ""}</p><div class="job-actions">${j.output ? '<button data-action="play" class="small secondary">Abrir vídeo</button>' : ""}${j.files.length ? '<button data-action="frame" class="small secondary">Salvar quadro</button>' : ""}${j.folder ? '<button data-action="folder" class="small secondary">Ver clipes ↗</button>' : ""}${busy ? `<button data-action="cancel" class="small secondary stop-button">${j.status === "queued" ? "Retirar da fila" : "Abortar"}</button>` : '<button data-action="delete" class="small secondary stop-button">Excluir geração</button>'}</div></div></article>`;
         })
         .join("")
     : '<p class="hint">Seus clipes e o andamento das gerações aparecerão aqui.</p>';
@@ -273,7 +273,38 @@ $("characters").onclick = (e) => {
   $("character-name").value = c.name;
   $("character-description").value = c.description;
   $("character-dialog").showModal();
+  action(() => showCharacterPhoto(selected, c));
 };
+async function showCharacterPhoto(projectId, character) {
+  const photo = $("character-photo");
+  photo.hidden = true;
+  photo.removeAttribute("src");
+  const src = await api.characterPhoto(projectId, character.id);
+  if (
+    !src ||
+    !$("character-dialog").open ||
+    selected !== projectId ||
+    editingCharacter !== character.id
+  )
+    return;
+  photo.alt = `Imagem de ${character.name}`;
+  photo.src = src;
+  photo.hidden = false;
+}
+$("character-replace").onclick = () =>
+  action(async () => {
+    const projectId = selected;
+    const characterId = editingCharacter;
+    await save();
+    const next = await api.replaceCharacterPhoto(projectId, characterId);
+    if (!next) return;
+    updateData(next);
+    const character = project().characters.find(
+      (item) => item.id === characterId,
+    );
+    await showCharacterPhoto(projectId, character);
+    toast("Foto do personagem atualizada.");
+  });
 $("open-project-assets").onclick = () =>
   action(() => api.openProjectAssets(selected));
 $("character-export").onclick = () =>
@@ -364,6 +395,12 @@ $("jobs").onclick = (e) => {
   const id = b.closest("[data-id]").dataset.id;
   if (b.dataset.action === "frame") {
     openClipFrame(id);
+    return;
+  }
+  if (b.dataset.action === "delete") {
+    action(async () => {
+      if (await api.deleteJob(id)) toast("Geração excluída.");
+    });
     return;
   }
   action(() =>
@@ -554,6 +591,7 @@ async function generateSceneImage() {
     return;
   }
   environmentBusy = true;
+  $("environment-abort").hidden = false;
   const buttons = [
     "environment-generate",
     "environment-upload",
@@ -572,6 +610,11 @@ async function generateSceneImage() {
       backgroundOnly: $("environment-background-only").checked,
       scenePreview: scenePreviewMode,
     });
+    if (draft.cancelled) {
+      $("environment-status").textContent = "Prévia abortada.";
+      $("environment-approve").disabled = $("environment-draft").hidden;
+      return;
+    }
     $("environment-draft").src = draft.preview;
     $("environment-draft").hidden = false;
     $("environment-status").textContent =
@@ -583,10 +626,17 @@ async function generateSceneImage() {
     $("environment-approve").disabled = $("environment-draft").hidden;
   } finally {
     environmentBusy = false;
+    $("environment-abort").hidden = true;
     for (const id of buttons) $(id).disabled = false;
   }
 }
 $("environment-generate").onclick = generateSceneImage;
+$("environment-abort").onclick = () =>
+  action(async () => {
+    await api.cancelEnvironment();
+    if (environmentBusy)
+      $("environment-status").textContent = "Abortando prévia…";
+  });
 $("environment-approve").onclick = () =>
   action(async () => {
     updateData(

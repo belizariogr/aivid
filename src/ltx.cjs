@@ -131,7 +131,7 @@ class Ltx {
       timeout: 4 * 60 * 60 * 1000,
     });
   }
-  async generateEnvironment(request) {
+  async generateEnvironment(request, start = () => true) {
     if ((await this.progress()).status === "running")
       throw new Error("Aguarde a geração em andamento no LTX.");
     await this.request("/api/settings", {
@@ -142,6 +142,7 @@ class Ltx {
       throw new Error(
         "A geração local de imagens está indisponível. Confira se o Z-Image Turbo está instalado no LTX Desktop.",
       );
+    if (!start()) return { status: "cancelled" };
     return this.request("/api/generate-image", request, {
       timeout: 30 * 60 * 1000,
     });

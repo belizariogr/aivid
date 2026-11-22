@@ -52,9 +52,14 @@ let window,
   store,
   engine = new Ltx(),
   active = null,
+  activeImage = null,
+  activeProcess = null,
   working = false,
   blocker = null,
-  quitting = false;
+  quitting = false,
+  closing = false;
+const deletingJobs = new Set();
+const idleWaiters = new Set();
 const environmentDrafts = new Map();
 const environmentReferences = new Map();
 const page = path.join(__dirname, "index.html");
@@ -118,12 +123,39 @@ async function ffmpeg() {
     );
   }
 }
+function finishWork() {
+  working = false;
+  for (const resolve of idleWaiters) resolve();
+  idleWaiters.clear();
+}
+async function stopGeneration(task) {
+  task.cancelRequested = true;
+  activeProcess?.abort();
+  for (let attempt = 0; attempt < 4 && task.ownsBackend; attempt++) {
+    const result = await engine.cancel();
+    if (result?.status !== "no_active_generation") return;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  if (task.ownsBackend)
+    throw new Error(
+      "O LTX ainda está iniciando a geração. Tente abortar novamente.",
+    );
+}
+async function runVideoProcess(binary, args) {
+  const controller = new AbortController();
+  activeProcess = controller;
+  try {
+    return await exec(binary, args, { signal: controller.signal });
+  } finally {
+    activeProcess = null;
+  }
+}
 async function runQueue() {
-  if (working) return;
+  if (working || closing || quitting) return;
   working = true;
   blocker = powerSaveBlocker.start("prevent-app-suspension");
   try {
-    while (true) {
+    while (!closing && !quitting) {
       const job = store.data.jobs.find((j) => j.status === "queued");
       if (!job) break;
       active = job;
@@ -225,7 +257,7 @@ async function runQueue() {
             persist();
             const temporaryOutput = path.join(dir, `${filename}-temp.mp4`);
             try {
-              await exec(binary, [
+              await runVideoProcess(binary, [
                 "-hide_banner",
                 "-loglevel",
                 "error",
@@ -278,7 +310,7 @@ async function runQueue() {
           );
           if (p.settings.chain && i < job.scenes.length - 1) {
             previousFrame = path.join(dir, `referencia-${i + 1}.png`);
-            await exec(binary, [
+            await runVideoProcess(binary, [
               "-y",
               "-sseof",
               "-0.1",
@@ -304,7 +336,7 @@ async function runQueue() {
         }
       } catch (error) {
         job.status = job.cancelRequested ? "cancelled" : "error";
-        job.error = error.message;
+        if (!job.cancelRequested) job.error = error.message;
       } finally {
         if (timer) clearInterval(timer);
         job.ownsBackend = false;
@@ -317,7 +349,7 @@ async function runQueue() {
       }
     }
   } finally {
-    working = false;
+    finishWork();
     if (blocker !== null && powerSaveBlocker.isStarted(blocker))
       powerSaveBlocker.stop(blocker);
     blocker = null;
@@ -478,7 +510,7 @@ app.whenReady().then(() => {
     return { id: referenceId, name: path.basename(filename) };
   });
   handle("generate-environment", async (id, sid, input) => {
-    if (working) throw new Error("Aguarde a geração em andamento.");
+    if (working || closing) throw new Error("Aguarde a geração em andamento.");
     const project = store.project(id);
     const scene = project.scenes.find((item) => item.id === sid);
     const prompt = String(input.prompt || "").trim();
@@ -532,9 +564,17 @@ app.whenReady().then(() => {
       ...(imagePath && { imagePath, strength: 0.72 }),
     };
     working = true;
+    const task = { cancelRequested: false, ownsBackend: false };
+    activeImage = task;
     const imageBlocker = powerSaveBlocker.start("prevent-app-suspension");
     try {
-      const result = await engine.generateEnvironment(request);
+      const result = await engine.generateEnvironment(request, () => {
+        if (task.cancelRequested) return false;
+        task.ownsBackend = true;
+        return true;
+      });
+      if (task.cancelRequested || result.status === "cancelled")
+        return { cancelled: true };
       if (result.status !== "complete" || !result.image_paths?.[0])
         throw new Error("O LTX não retornou uma imagem.");
       const image = result.image_paths[0];
@@ -548,9 +588,14 @@ app.whenReady().then(() => {
       };
     } finally {
       powerSaveBlocker.stop(imageBlocker);
-      working = false;
+      task.ownsBackend = false;
+      activeImage = null;
+      finishWork();
       if (!quitting) setImmediate(runQueue);
     }
+  });
+  handle("cancel-environment", async () => {
+    if (activeImage) await stopGeneration(activeImage);
   });
   handle("approve-environment", (id, sid, name) => {
     const project = store.project(id);
@@ -589,6 +634,7 @@ app.whenReady().then(() => {
     if (error) throw new Error("Instale o LTX Desktop em Aplicativos.");
   });
   handle("enqueue", async (id, sceneId, continuous = false) => {
+    if (closing) throw new Error("O Aivid está encerrando.");
     const p = store.project(id);
     if (!p.outputDir)
       throw new Error("Escolha a pasta de saída antes de gerar.");
@@ -673,8 +719,85 @@ app.whenReady().then(() => {
     } else if (j.status === "running") {
       j.cancelRequested = true;
       persist();
-      if (j.ownsBackend) await engine.cancel();
+      try {
+        await stopGeneration(j);
+      } finally {
+        persist();
+      }
     }
+  });
+  handle("delete-job", async (id) => {
+    const job = jobById(id);
+    if (["running", "queued"].includes(job.status))
+      throw new Error("Aborte a geração e aguarde até ela parar.");
+    if (deletingJobs.has(id)) return false;
+    deletingJobs.add(id);
+    try {
+      const result = await dialog.showMessageBox(window, {
+        type: "warning",
+        message: "Excluir esta geração?",
+        detail:
+          "Os clipes desta geração serão movidos para o Lixo do macOS. As imagens que você salvou como referência continuam na biblioteca.",
+        buttons: ["Cancelar", "Mover para o Lixo"],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      if (result.response !== 1) return false;
+      const files = new Set(job.files);
+      if (job.folder && !job.imported) {
+        for (const [index, scene] of job.scenes.entries()) {
+          const basename = job.continuous
+            ? "sequencia"
+            : `cena-${String(scene.number).padStart(2, "0")}`;
+          files.add(path.join(job.folder, `${basename}.json`));
+          if (job.project.settings.chain && index < job.scenes.length - 1)
+            files.add(path.join(job.folder, `referencia-${index + 1}.png`));
+        }
+      }
+      for (const filename of files) {
+        if (fs.existsSync(filename)) await shell.trashItem(filename);
+      }
+      store.data.jobs = store.data.jobs.filter((item) => item.id !== id);
+      for (const [token, file] of mediaFiles)
+        if (files.has(file)) mediaFiles.delete(token);
+      persist();
+      return true;
+    } finally {
+      deletingJobs.delete(id);
+    }
+  });
+  handle("replace-character-photo", async (id, cid) => {
+    const project = store.project(id);
+    const selection = await dialog.showOpenDialog(window, {
+      title: "Trocar foto do personagem",
+      filters: [
+        { name: "Imagens", extensions: ["png", "jpg", "jpeg", "webp"] },
+      ],
+      properties: ["openFile"],
+    });
+    if (selection.canceled) return null;
+    const character = project.characters.find((item) => item.id === cid);
+    if (!character) throw new Error("Personagem não encontrado.");
+    const filename = selection.filePaths[0];
+    if (nativeImage.createFromPath(filename).isEmpty())
+      throw new Error("Não foi possível abrir a imagem escolhida.");
+    character.image = store.asset(id, filename);
+    store.save();
+    return library();
+  });
+  handle("character-photo", (id, cid) => {
+    const character = store
+      .project(id)
+      .characters.find((item) => item.id === cid);
+    if (!character?.image) return null;
+    const photo = nativeImage.createFromPath(character.image);
+    if (photo.isEmpty()) return null;
+    const { width, height } = photo.getSize();
+    return (
+      Math.max(width, height) > 1200
+        ? photo.resize(width >= height ? { width: 1200 } : { height: 1200 })
+        : photo
+    ).toDataURL();
   });
   handle("save-clip-frame", async (jobId, index, position, name) => {
     const job = jobById(jobId);
@@ -751,30 +874,36 @@ app.whenReady().then(() => {
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (e) => e.preventDefault());
   window.loadFile(page);
-  window.on("close", async (e) => {
-    if (working && !quitting) {
-      e.preventDefault();
-      const r = await dialog.showMessageBox(window, {
-        type: "question",
-        buttons: ["Continuar gerando", "Cancelar e sair"],
-        defaultId: 0,
-        cancelId: 0,
-        message: "Há uma geração em andamento.",
-        detail: "Mantenha o Aivid e o LTX abertos até a geração terminar.",
-      });
-      if (r.response === 1) {
-        quitting = true;
-        for (const j of store.data.jobs)
-          if (j.status === "queued") j.status = "cancelled";
-        if (active) {
-          active.cancelRequested = true;
-          if (active.ownsBackend) await engine.cancel().catch(() => {});
-        }
-        if (working && !active) await engine.cancel().catch(() => {});
-        persist();
-        app.quit();
-      }
-    }
+  window.on("close", (event) => {
+    if (!working || quitting) return;
+    event.preventDefault();
+    app.quit();
   });
+});
+app.on("before-quit", (event) => {
+  if (
+    quitting ||
+    (!working && !store?.data.jobs.some((job) => job.status === "queued"))
+  )
+    return;
+  event.preventDefault();
+  if (closing) return;
+  closing = true;
+  void (async () => {
+    try {
+      for (const job of store.data.jobs) {
+        if (job.status === "queued") job.status = "cancelled";
+      }
+      persist();
+      const task = active || activeImage;
+      if (task) await stopGeneration(task);
+      if (working) await new Promise((resolve) => idleWaiters.add(resolve));
+      quitting = true;
+      app.quit();
+    } catch (error) {
+      closing = false;
+      dialog.showErrorBox("Não foi possível encerrar a geração", error.message);
+    }
+  })();
 });
 app.on("window-all-closed", () => app.quit());
