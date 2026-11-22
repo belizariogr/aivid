@@ -131,6 +131,21 @@ class Ltx {
       timeout: 4 * 60 * 60 * 1000,
     });
   }
+  async generateEnvironment(request) {
+    if ((await this.progress()).status === "running")
+      throw new Error("Aguarde a geração em andamento no LTX.");
+    await this.request("/api/settings", {
+      user_prefers_fal_api_image_generations: false,
+    });
+    const status = await this.request("/api/image-generation/status");
+    if (status.localBlocker || status.defaultProvider !== "local")
+      throw new Error(
+        "A geração local de imagens está indisponível. Confira se o Z-Image Turbo está instalado no LTX Desktop.",
+      );
+    return this.request("/api/generate-image", request, {
+      timeout: 30 * 60 * 1000,
+    });
+  }
   progress() {
     return this.request("/api/generation/progress");
   }

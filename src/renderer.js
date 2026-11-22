@@ -129,7 +129,7 @@ function render() {
     (p.scenes || [])
       .map(
         (s, i) =>
-          `<section class="scene-card" data-id="${esc(s.id)}"><div class="scene-heading"><span class="scene-number">${String(i + 1).padStart(2, "0")}</span><input class="scene-name" aria-label="Nome da cena ${i + 1}" value="${esc(s.name)}" maxlength="100"><button class="remove-scene" title="Mover para cima" data-action="up">↑</button><button class="remove-scene" title="Mover para baixo" data-action="down">↓</button><button class="remove-scene" title="Remover cena" data-action="remove">×</button></div><div class="scene-cast">${p.characters.map((c) => `<label><input type="checkbox" value="${esc(c.id)}" ${(s.characterIds || []).includes(c.id) ? "checked" : ""}>${esc(c.name)}</label>`).join("")}</div><textarea class="scene-prompt" aria-label="Prompt da cena ${i + 1}" rows="5" placeholder="Descreva a ação desta cena, os gestos e o movimento da câmera…">${esc(s.prompt)}</textarea><div class="scene-controls"><label>Duração<select class="scene-duration">${option("", "Automática", s.duration == null)}${durations.map((d) => option(d, `${d}s`, d === s.duration)).join("")}</select></label><label>Imagem inicial<select class="scene-reference">${option("", "Padrão do projeto", !s.reference)}${p.environmentImage ? option("environment", "Ambiente do projeto", s.reference === "environment") : ""}${option("text", "Só o prompt", s.reference === "text")}${s.image ? option("scene", "Imagem desta cena", s.reference === "scene") : ""}${p.characters.map((c) => option(c.id, c.name, s.reference === c.id)).join("")}</select></label></div>${s.preview ? `<img class="scene-thumb" src="${esc(s.preview)}" alt="Imagem inicial da cena ${i + 1}">` : ""}<div class="scene-actions"><button class="small secondary" data-action="image">＋ Imagem da cena</button><button class="small secondary" data-action="generate">Gerar só esta cena ↗</button></div></section>`,
+          `<section class="scene-card" data-id="${esc(s.id)}"><div class="scene-heading"><span class="scene-number">${String(i + 1).padStart(2, "0")}</span><input class="scene-name" aria-label="Nome da cena ${i + 1}" value="${esc(s.name)}" maxlength="100"><button class="remove-scene" title="Mover para cima" data-action="up">↑</button><button class="remove-scene" title="Mover para baixo" data-action="down">↓</button><button class="remove-scene" title="Remover cena" data-action="remove">×</button></div><div class="scene-cast">${p.characters.map((c) => `<label><input type="checkbox" value="${esc(c.id)}" ${(s.characterIds || []).includes(c.id) ? "checked" : ""}>${esc(c.name)}</label>`).join("")}</div><textarea class="scene-prompt" aria-label="Prompt da cena ${i + 1}" rows="5" placeholder="Descreva a ação desta cena, os gestos e o movimento da câmera…">${esc(s.prompt)}</textarea><div class="scene-controls"><label>Duração<select class="scene-duration">${option("", "Automática", s.duration == null)}${durations.map((d) => option(d, `${d}s`, d === s.duration)).join("")}</select></label><label>Imagem inicial<select class="scene-reference">${option("", "Padrão do projeto", !s.reference)}${p.environmentImage ? option("environment", "Ambiente do projeto", s.reference === "environment") : ""}${option("text", "Só o prompt", s.reference === "text")}${(p.environments || []).map((entry) => option(`env:${entry.id}`, entry.name, s.reference === `env:${entry.id}`)).join("")}${s.image ? option("scene", "Imagem desta cena", s.reference === "scene") : ""}${p.characters.map((c) => option(c.id, c.name, s.reference === c.id)).join("")}</select></label></div>${s.preview ? `<img class="scene-thumb" src="${esc(s.preview)}" alt="Imagem inicial da cena ${i + 1}">` : ""}<div class="scene-actions"><button class="small secondary" data-action="image">Importar quadro</button><button class="small secondary" data-action="environment">✦ Gerar ambiente</button><button class="small secondary" data-action="generate">Gerar só esta cena ↗</button></div></section>`,
       )
       .join("") || '<p class="hint">Adicione a primeira cena para começar.</p>';
   updateCount();
@@ -300,6 +300,7 @@ $("scenes").onclick = (e) => {
   action(async () => {
     await save();
     const sid = card.dataset.id;
+    if (button.dataset.action === "environment") openEnvironment(sid);
     if (button.dataset.action === "image")
       updateData(await api.sceneImage(selected, sid));
     if (button.dataset.action === "generate") {
@@ -432,3 +433,106 @@ $("player-dialog").onclose = () => {
   $("video").removeAttribute("src");
   $("video").load();
 };
+
+let environmentSceneId,
+  environmentBusy = false;
+function openEnvironment(id) {
+  const p = project();
+  const scene = p.scenes.find((item) => item.id === id);
+  environmentSceneId = id;
+  const approved = p.environments?.find(
+    (entry) => scene.reference === `env:${entry.id}`,
+  );
+  $("environment-name").value = approved?.name || scene.name;
+  $("environment-prompt").value =
+    approved?.prompt || scene.environmentPrompt || scene.prompt;
+  const source = approved
+    ? `env:${approved.id}`
+    : scene.reference === "scene" && scene.image
+      ? "scene"
+      : "";
+  $("environment-source").innerHTML =
+    option("", "Nenhuma · gerar pelo texto", !source) +
+    (p.environmentImage ? option("project", "Ambiente do projeto") : "") +
+    (scene.image
+      ? option("scene", "Quadro importado da cena", source === "scene")
+      : "") +
+    p.characters
+      .map((character) =>
+        option(`cast:${character.id}`, `Personagem: ${character.name}`),
+      )
+      .join("") +
+    (p.environments || [])
+      .map((entry) =>
+        option(`env:${entry.id}`, entry.name, entry.id === approved?.id),
+      )
+      .join("");
+  $("environment-draft").hidden = true;
+  $("environment-draft").removeAttribute("src");
+  $("environment-approve").disabled = true;
+  $("environment-generate").textContent = "Gerar prévia";
+  $("environment-status").textContent = "";
+  $("environment-dialog").showModal();
+}
+$("environment-close").onclick = () => $("environment-dialog").close();
+$("environment-dialog").addEventListener("cancel", (event) => {
+  if (environmentBusy) event.preventDefault();
+});
+$("environment-upload").onclick = () =>
+  action(async () => {
+    const source = await api.environmentReference(selected, environmentSceneId);
+    if (!source) return;
+    const select = $("environment-source");
+    select.querySelector("[data-upload]")?.remove();
+    const entry = new Option(source.name, source.id, true, true);
+    entry.dataset.upload = "";
+    select.append(entry);
+    select.value = source.id;
+  });
+$("environment-generate").onclick = async () => {
+  const prompt = $("environment-prompt").value.trim();
+  if (!prompt) {
+    $("environment-status").textContent =
+      "Descreva como deve ser o primeiro quadro.";
+    return;
+  }
+  environmentBusy = true;
+  const buttons = [
+    "environment-generate",
+    "environment-upload",
+    "environment-close",
+  ];
+  for (const id of buttons) $(id).disabled = true;
+  $("environment-approve").disabled = true;
+  $("environment-status").textContent = "Gerando imagem localmente…";
+  try {
+    const draft = await api.generateEnvironment(selected, environmentSceneId, {
+      prompt,
+      reference: $("environment-source").value,
+    });
+    $("environment-draft").src = draft.preview;
+    $("environment-draft").hidden = false;
+    $("environment-status").textContent =
+      "Revise a prévia ou ajuste o prompt e gere novamente.";
+    $("environment-generate").textContent = "Gerar novamente";
+    $("environment-approve").disabled = false;
+  } catch (error) {
+    $("environment-status").textContent = error.message;
+    $("environment-approve").disabled = $("environment-draft").hidden;
+  } finally {
+    environmentBusy = false;
+    for (const id of buttons) $(id).disabled = false;
+  }
+};
+$("environment-approve").onclick = () =>
+  action(async () => {
+    updateData(
+      await api.approveEnvironment(
+        selected,
+        environmentSceneId,
+        $("environment-name").value,
+      ),
+    );
+    $("environment-dialog").close();
+    toast("Ambiente aprovado e disponível para outras cenas.");
+  });

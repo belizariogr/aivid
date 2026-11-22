@@ -13,6 +13,11 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
   const handlers = new Map(),
     requests = [];
   class FakeEngine {
+    async generateEnvironment(request) {
+      assert.match(request.prompt, /cartoon/);
+      assert.ok(request.imagePath.endsWith(".png"));
+      return { status: "complete", image_paths: [environment] };
+    }
     async prepare(model) {
       assert.equal(model, "ltx-2.3-22b-distilled-1.1");
     }
@@ -147,6 +152,24 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
   );
   assert.equal(metadata.request.audio, false);
   assert.equal(p.scenes[0].duration, null);
+  const uploaded = await invoke("environment-reference", p.id, p.scenes[1].id);
+  await invoke("generate-environment", p.id, p.scenes[1].id, {
+    prompt: "Faça em cartoon e pinte a barraca de azul.",
+    reference: uploaded.id,
+  });
+  assert.equal((await invoke("library")).projects[0].environments.length, 0);
+  const approved = (
+    await invoke("approve-environment", p.id, p.scenes[1].id, "Praça azul")
+  ).projects[0];
+  const frame = approved.environments[0];
+  assert.equal(approved.scenes[1].reference, `env:${frame.id}`);
+  await invoke("save-project", {
+    ...approved,
+    scenes: [
+      { ...approved.scenes[0], reference: `env:${frame.id}` },
+      approved.scenes[1],
+    ],
+  });
   await invoke("enqueue", p.id, p.scenes[0].id);
   for (let n = 0; n < 100; n++) {
     await new Promise((r) => setTimeout(r, 10));
@@ -156,7 +179,11 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
   assert.equal(jobs[1].status, "complete", jobs[1].error);
   assert.equal(requests[1].duration, 6);
   assert.equal(requests[0].imagePath, savedEnvironment);
-  assert.equal(requests[1].imagePath, savedEnvironment);
+  assert.equal(requests[1].imagePath, frame.image);
+  assert.match(
+    requests[1].prompt,
+    /Use the attached image as the opening frame/,
+  );
   const bad = await handlers
     .get("library")({ senderFrame: { url: "https://example.com" } })
     .catch(() => null);

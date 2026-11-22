@@ -276,6 +276,44 @@
         </section>
       </div>
     </dialog>
+    <dialog id="environment-dialog" aria-labelledby="environment-title">
+      <div class="panel-heading">
+        <h2 id="environment-title">Gerar ambiente</h2>
+        <button id="environment-close" class="secondary small">Fechar</button>
+      </div>
+      <label
+        >Nome para reutilizar<input id="environment-name" maxlength="100"
+      /></label>
+      <label
+        >Como deve ser o primeiro quadro?
+        <textarea
+          id="environment-prompt"
+          rows="5"
+          maxlength="10000"
+          placeholder="Transforme a foto em cartoon, mantenha o moinho no centro e pinte a barraca de azul."
+        ></textarea>
+      </label>
+      <label
+        >Imagem de referência (opcional)<select id="environment-source"></select
+      ></label>
+      <button id="environment-upload" class="secondary small">
+        Enviar imagem de referência
+      </button>
+      <p class="hint">
+        O modelo usa uma imagem de referência por vez. As descrições do elenco
+        selecionado também entram no pedido.
+      </p>
+      <img id="environment-draft" alt="Prévia do ambiente gerado" hidden />
+      <p id="environment-status" role="status"></p>
+      <div class="dialog-actions">
+        <button id="environment-generate" class="secondary">
+          Gerar prévia
+        </button>
+        <button id="environment-approve" class="primary" disabled>
+          Aprovar e usar nesta cena
+        </button>
+      </div>
+    </dialog>
     <script src="duration.js"></script>
     <script src="renderer.js"></script>
   </body>

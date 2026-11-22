@@ -15,6 +15,11 @@ contextBridge.exposeInMainWorld("aivid", {
   sceneImage: (id, sid) => invoke("scene-image", id, sid),
   chooseEnvironment: (id) => invoke("scene-image", id),
   removeEnvironment: (id) => invoke("remove-environment", id),
+  environmentReference: (id, sid) => invoke("environment-reference", id, sid),
+  generateEnvironment: (id, sid, input) =>
+    invoke("generate-environment", id, sid, input),
+  approveEnvironment: (id, sid, name) =>
+    invoke("approve-environment", id, sid, name),
   connect: () => invoke("connect"),
   openLtx: () => invoke("open-ltx"),
   enqueue: (id, r) => invoke("enqueue", id, r),

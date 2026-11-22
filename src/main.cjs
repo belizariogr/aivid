@@ -50,6 +50,8 @@ let window,
   working = false,
   blocker = null,
   quitting = false;
+const environmentDrafts = new Map();
+const environmentReferences = new Map();
 const page = path.join(__dirname, "index.html");
 function emit() {
   if (window && !window.isDestroyed())
@@ -86,9 +88,14 @@ function library() {
       }
     }
     for (const scene of p.scenes || []) {
-      if (scene.image)
+      const approved = p.environments?.find(
+        (entry) => scene.reference === `env:${entry.id}`,
+      );
+      const reference =
+        approved?.image || (scene.reference === "scene" && scene.image);
+      if (reference)
         scene.preview = nativeImage
-          .createFromPath(scene.image)
+          .createFromPath(reference)
           .resize({ width: 400 })
           .toDataURL();
     }
@@ -141,6 +148,10 @@ async function runQueue() {
           else if (scene.reference === "text") image = null;
           else if (scene.reference === "environment")
             image = p.environmentImage;
+          else if (scene.reference?.startsWith("env:"))
+            image = p.environments.find(
+              (entry) => entry.id === scene.reference.slice(4),
+            )?.image;
           else if (scene.reference)
             image = p.characters.find((c) => c.id === scene.reference)?.image;
           else image = previousFrame || p.environmentImage;
@@ -163,7 +174,13 @@ async function runQueue() {
             }
           }, 2000);
           const request = {
-            prompt: buildPrompt(p, scene.prompt, scene.characterIds),
+            prompt: [
+              buildPrompt(p, scene.prompt, scene.characterIds),
+              image &&
+                "Use the attached image as the opening frame. Preserve its setting, layout, character appearance and visual style while animating the scene action.",
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
             resolution: p.settings.resolution,
             duration: scene.duration ?? estimateDuration(scene.prompt),
             fps: p.settings.fps,
@@ -357,6 +374,119 @@ app.whenReady().then(() => {
     }
     return library();
   });
+  handle("environment-reference", async (id, sid) => {
+    const project = store.project(id);
+    if (!project.scenes.some((scene) => scene.id === sid))
+      throw new Error("Cena não encontrada.");
+    const selection = await dialog.showOpenDialog(window, {
+      title: "Imagem de referência para o ambiente",
+      filters: [
+        { name: "Imagens", extensions: ["png", "jpg", "jpeg", "webp"] },
+      ],
+      properties: ["openFile"],
+    });
+    if (selection.canceled) return null;
+    const filename = selection.filePaths[0];
+    const referenceId = `upload:${randomUUID()}`;
+    environmentReferences.set(`${id}/${sid}`, {
+      id: referenceId,
+      image: store.asset(id, filename),
+    });
+    return { id: referenceId, name: path.basename(filename) };
+  });
+  handle("generate-environment", async (id, sid, input) => {
+    if (working) throw new Error("Aguarde a geração em andamento.");
+    const project = store.project(id);
+    const scene = project.scenes.find((item) => item.id === sid);
+    const prompt = String(input.prompt || "").trim();
+    if (!scene || !prompt || prompt.length > 10000)
+      throw new Error("Descreva a imagem inicial em até 10 mil caracteres.");
+    const upload = environmentReferences.get(`${id}/${sid}`);
+    const references = new Map([
+      ["project", project.environmentImage],
+      ["scene", scene.image],
+      ...project.characters.map((item) => [`cast:${item.id}`, item.image]),
+      ...(project.environments || []).map((item) => [
+        `env:${item.id}`,
+        item.image,
+      ]),
+    ]);
+    if (upload) references.set(upload.id, upload.image);
+    const imagePath = references.get(input.reference);
+    if (input.reference && !imagePath)
+      throw new Error("Escolha uma imagem da biblioteca deste projeto.");
+    const cast = project.characters
+      .filter((character) => scene.characterIds?.includes(character.id))
+      .map((character) =>
+        [character.name, character.description].filter(Boolean).join(": "),
+      );
+    const [width, height] = {
+      "16:9": [1024, 576],
+      "9:16": [576, 1024],
+      "1:1": [768, 768],
+    }[project.settings.aspectRatio];
+    const request = {
+      prompt: [
+        project.description &&
+          `Context and visual continuity: ${project.description}`,
+        cast.length && `Cast available in this scene: ${cast.join("; ")}`,
+        imagePath &&
+          "Use the reference image as a visual starting point and apply the changes below.",
+        `Create a single opening still for this scene. ${prompt}`,
+        "No captions or logos.",
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      width,
+      height,
+      numImages: 1,
+      numSteps: 8,
+      ...(imagePath && { imagePath, strength: 0.72 }),
+    };
+    working = true;
+    const imageBlocker = powerSaveBlocker.start("prevent-app-suspension");
+    try {
+      const result = await engine.generateEnvironment(request);
+      if (result.status !== "complete" || !result.image_paths?.[0])
+        throw new Error("O LTX não retornou uma imagem.");
+      const image = result.image_paths[0];
+      const key = `${id}/${sid}`;
+      environmentDrafts.set(key, { image, prompt });
+      return {
+        preview: nativeImage
+          .createFromPath(image)
+          .resize({ width: 1000 })
+          .toDataURL(),
+      };
+    } finally {
+      powerSaveBlocker.stop(imageBlocker);
+      working = false;
+      if (!quitting) setImmediate(runQueue);
+    }
+  });
+  handle("approve-environment", (id, sid, name) => {
+    const project = store.project(id);
+    const scene = project.scenes.find((item) => item.id === sid);
+    const key = `${id}/${sid}`;
+    const draft = environmentDrafts.get(key);
+    if (!scene || !draft) throw new Error("Gere e revise a imagem primeiro.");
+    const entry = {
+      id: randomUUID(),
+      name:
+        String(name || "")
+          .trim()
+          .slice(0, 100) || scene.name,
+      prompt: draft.prompt,
+      image: store.asset(id, draft.image),
+    };
+    (project.environments ??= []).push(entry);
+    scene.reference = `env:${entry.id}`;
+    scene.environmentPrompt = entry.prompt;
+    environmentDrafts.delete(key);
+    environmentReferences.delete(key);
+    store.save();
+    return library();
+  });
   handle("remove-environment", (id) => {
     const p = store.project(id);
     p.environmentImage = null;
@@ -387,6 +517,7 @@ app.whenReady().then(() => {
       if (
         s.reference &&
         !["scene", "text", "environment"].includes(s.reference) &&
+        !p.environments?.some((entry) => s.reference === `env:${entry.id}`) &&
         !p.characters.some((c) => c.id === s.reference)
       )
         throw new Error(
@@ -439,7 +570,7 @@ app.whenReady().then(() => {
     minWidth: 1080,
     minHeight: 720,
     title: "Aivid",
-    backgroundColor: "#101210",
+    backgroundColor: "#101021",
     titleBarStyle: "hiddenInset",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -459,7 +590,7 @@ app.whenReady().then(() => {
         buttons: ["Continuar gerando", "Cancelar e sair"],
         defaultId: 0,
         cancelId: 0,
-        message: "Há vídeos na fila.",
+        message: "Há uma geração em andamento.",
         detail: "Mantenha o Aivid e o LTX abertos até a geração terminar.",
       });
       if (r.response === 1) {
@@ -470,6 +601,7 @@ app.whenReady().then(() => {
           active.cancelRequested = true;
           if (active.ownsBackend) await engine.cancel().catch(() => {});
         }
+        if (working && !active) await engine.cancel().catch(() => {});
         persist();
         app.quit();
       }

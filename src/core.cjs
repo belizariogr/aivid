@@ -63,6 +63,7 @@ function normalizeProject(input, existing) {
           )
         : (existing?.characters || []).map((c) => c.id),
       image: old?.image || null,
+      environmentPrompt: old?.environmentPrompt || "",
     };
   });
   return {
@@ -75,6 +76,7 @@ function normalizeProject(input, existing) {
     characters: existing?.characters || [],
     sceneImage: existing?.sceneImage || null,
     environmentImage: existing?.environmentImage || null,
+    environments: existing?.environments || [],
     settings,
     createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),

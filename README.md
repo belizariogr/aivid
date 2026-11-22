@@ -46,7 +46,7 @@ O empacotamento usa Node 24 via `npx`, sem trocar o Node global da máquina. O a
 1. Crie um projeto e descreva cenário, estilo e continuidade.
 2. Adicione uma imagem de cada personagem; clique nela para editar nome e descrição.
 3. Adicione cenas, escreva o prompt de cada uma e marque os personagens presentes.
-4. Para referências visuais consistentes, prepare uma **imagem inicial da cena**, já com os personagens e o cenário na posição desejada. Importe-a no cartão da cena.
+4. No cartão da cena, use **Gerar ambiente** para criar um quadro inicial pelo texto, com uma referência opcional. Ajuste o prompt e gere novas prévias até aprovar uma. O quadro aprovado entra na biblioteca do projeto e pode ser escolhido em outras cenas. Também é possível importar um quadro pronto.
 5. Escolha resolução, duração e pasta de saída.
 6. Clique em **Gerar só esta cena** ou **Gerar todas as cenas**.
 7. Use as setas ↑ e ↓ nos cartões para ordenar as cenas.
@@ -56,7 +56,7 @@ O empacotamento usa Node 24 via `npx`, sem trocar o Node global da máquina. O a
 
 A biblioteca guarda todos os personagens individualmente. Na geração comum do LTX, porém, há **uma imagem inicial por cena**. Selecionar personagens inclui suas descrições no prompt; isso não faz o modelo consumir todas as imagens como referências visuais simultâneas.
 
-Para uma cena com dois personagens, prefira uma imagem inicial já composta com os dois. É possível escolher só a imagem de um personagem como referência, mas ela pode não conter o cenário nem os outros personagens. Esta versão não gera automaticamente essas composições.
+Para uma cena com dois personagens, prefira uma imagem inicial já composta com os dois. É possível escolher só a imagem de um personagem como referência, mas ela pode não conter o cenário nem os outros personagens. O Z-Image Turbo do LTX gera ou transforma um quadro por vez. Envie uma composição visual quando quiser representar vários personagens pelas imagens em vez das descrições.
 
 ### Duração e continuidade
 
