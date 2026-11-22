@@ -15,6 +15,7 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
   class FakeEngine {
     async generateEnvironment(request) {
       assert.match(request.prompt, /cartoon/);
+      assert.match(request.prompt, /Luz suave da manhã/);
       assert.match(request.prompt, /empty background plate/);
       assert.match(request.prompt, /Preserve the reference art direction/);
       assert.ok(request.imagePath.endsWith(".png"));
@@ -110,6 +111,7 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
   };
   let view = await invoke("save-project", {
     name: "História",
+    prePrompt: "Luz suave da manhã e câmera estável.",
     scenes: [
       { name: "Antes", prompt: "Primeira ação. Duração: 6 segundos." },
       { name: "Depois", prompt: "Segunda ação", duration: 2 },
@@ -200,6 +202,8 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
   );
   assert.equal(requests.length, 3);
   assert.equal(requests[2].duration, 8);
+  for (const request of requests)
+    assert.match(request.prompt, /Luz suave da manhã/);
   assert.equal(requests[2].imagePath, frame.image);
   assert.match(
     requests[2].prompt,

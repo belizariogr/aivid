@@ -43,7 +43,7 @@ O empacotamento usa Node 24 via `npx`, sem trocar o Node global da máquina. O a
 
 ## Fluxo recomendado
 
-1. Crie um projeto e descreva cenário, estilo e continuidade.
+1. Crie um projeto. Use **Pré-prompt do projeto** para definir estilo, câmera, iluminação e outras instruções recorrentes. O Aivid inclui esse texto nas prévias, nos ambientes e nos vídeos. Nos cartões das cenas, escreva apenas o que muda ou acontece.
 2. Adicione uma imagem de cada personagem; clique nela para editar nome e descrição.
 3. Adicione cenas, escreva o prompt de cada uma e marque os personagens presentes.
 4. No cartão da cena, use **Gerar ambiente** para criar um quadro inicial pelo texto, com uma referência opcional. Ajuste o prompt e gere novas prévias até aprovar uma. O quadro aprovado entra na biblioteca do projeto e pode ser escolhido em outras cenas. Também é possível importar um quadro pronto.

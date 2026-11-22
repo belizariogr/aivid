@@ -72,9 +72,23 @@
                 >Cenário e continuidade<textarea
                   id="description"
                   rows="3"
-                  placeholder="Estilo visual, cenário, iluminação e o que deve se manter igual em todas as cenas…"
+                  placeholder="Onde se passa a história e o que precisa permanecer entre cenas?"
                 ></textarea>
               </label>
+              <label
+                >Pré-prompt do projeto
+                <textarea
+                  id="pre-prompt"
+                  rows="4"
+                  maxlength="10000"
+                  aria-describedby="pre-prompt-hint"
+                  placeholder="Ex.: Animação 3D de papelão, luz suave da manhã, câmera estável e gestos fáceis de ler."
+                ></textarea>
+              </label>
+              <p class="hint" id="pre-prompt-hint">
+                Defina as instruções que se repetem. O Aivid aplica esse texto
+                às prévias, aos ambientes e aos vídeos.
+              </p>
               <div class="scene-actions">
                 <button id="choose-environment" class="small secondary">
                   Adicionar imagem do ambiente
@@ -117,9 +131,9 @@
                 </button>
               </div>
               <p class="hint scene-intro">
-                Para manter o estilo, gere as ações em um único clipe com a
-                imagem inicial da primeira cena. O LTX aceita até 20 segundos
-                por clipe.
+                Descreva o que acontece em cada cena. Para manter o estilo, gere
+                as ações em um único clipe com a imagem inicial da primeira
+                cena. O LTX aceita até 20 segundos por clipe.
               </p>
               <div id="scenes"></div>
               <div class="generate-footer">

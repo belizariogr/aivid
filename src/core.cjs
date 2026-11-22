@@ -71,6 +71,9 @@ function normalizeProject(input, existing) {
     id: existing?.id || randomUUID(),
     name: input.name.trim().slice(0, 100),
     description: String(input.description || "").slice(0, 10000),
+    prePrompt: String(input.prePrompt ?? existing?.prePrompt ?? "")
+      .trim()
+      .slice(0, 10000),
     prompt: String(input.prompt || "").slice(0, 50000),
     outputDir: existing?.outputDir || "",
     characters: existing?.characters || [],
@@ -95,6 +98,12 @@ function splitScenes(prompt) {
     throw new Error("Cada cena pode ter até 10 mil caracteres.");
   return scenes;
 }
+function projectPromptParts(project) {
+  return [
+    project.prePrompt && `Shared creative instructions:\n${project.prePrompt}`,
+    project.description && `Context and continuity:\n${project.description}`,
+  ].filter(Boolean);
+}
 function buildPrompt(project, scene, characterIds) {
   const cast = project.characters
     .filter((c) => !characterIds || characterIds.includes(c.id))
@@ -104,7 +113,7 @@ function buildPrompt(project, scene, characterIds) {
     )
     .join("\n");
   return [
-    project.description && `Context and continuity:\n${project.description}`,
+    ...projectPromptParts(project),
     cast &&
       `Recurring characters (preserve their appearance and clothing):\n${cast}`,
     `Scene action:\n${scene}`,
@@ -189,4 +198,5 @@ module.exports = {
   normalizeProject,
   splitScenes,
   buildPrompt,
+  projectPromptParts,
 };

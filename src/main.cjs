@@ -30,7 +30,12 @@ protocol.registerSchemesAsPrivileged([
 ]);
 const mediaFiles = new Map();
 const { estimateDuration, sequenceDuration } = require("./duration.js");
-const { Store, splitScenes, buildPrompt } = require("./core.cjs");
+const {
+  Store,
+  splitScenes,
+  buildPrompt,
+  projectPromptParts,
+} = require("./core.cjs");
 const { Ltx } = require("./ltx.cjs");
 const exec = promisify(execFile);
 app.setName("Aivid");
@@ -424,8 +429,7 @@ app.whenReady().then(() => {
     }[project.settings.aspectRatio];
     const request = {
       prompt: [
-        project.description &&
-          `Context and visual continuity: ${project.description}`,
+        ...projectPromptParts(project),
         !input.backgroundOnly &&
           cast.length &&
           `Cast available in this scene: ${cast.join("; ")}`,
