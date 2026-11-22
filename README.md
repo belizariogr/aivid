@@ -62,7 +62,7 @@ Para uma cena com dois personagens, prefira uma imagem inicial já composta com 
 
 Cada clipe tem de 2 a 20 segundos, conforme as opções do modelo e o hardware. Um prompt longo não se transforma automaticamente em um episódio de vários minutos: divida a história em cenas.
 
-A duração na coluna Geração é o padrão para **novas** cenas. Cada cartão permite escolher sua própria duração.
+Cenas novas usam **Duração automática**. O Aivid estima o tempo a partir das ações e pausas descritas no prompt e mostra a estimativa enquanto você escreve. O valor usa os tempos disponíveis no LTX e tem limite de 20 segundos por clipe. Se precisar de um tempo específico, escolha os segundos no cartão da cena. Cenas já salvas com duração fixa mantêm esse valor até você escolher **Automática**.
 
 A opção de continuidade está desligada por padrão. Quando ligada, usa o último quadro da cena anterior apenas se a próxima não tiver uma referência explícita. Ela não é necessária para clipes independentes e não garante identidade perfeita. Referências próprias por cena dão mais controle e evitam acumular alterações visuais.
 

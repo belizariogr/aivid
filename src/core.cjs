@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
-const DURATIONS = [2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20];
+const { durations: DURATIONS } = require("./duration.js");
 const defaults = () => ({
   resolution: "720p",
   duration: 10,
@@ -47,8 +47,9 @@ function normalizeProject(input, existing) {
   if (raw.length > 60) throw new Error("Use no máximo 60 cenas por projeto.");
   const scenes = raw.map((scene, index) => {
     const old = previous.get(scene.id);
-    const duration = Number(scene.duration || settings.duration);
-    if (!DURATIONS.includes(duration))
+    const value = scene.duration === undefined ? old?.duration : scene.duration;
+    const duration = value == null ? null : Number(value);
+    if (duration !== null && !DURATIONS.includes(duration))
       throw new Error("Duração de cena inválida.");
     return {
       id: old?.id || randomUUID(),

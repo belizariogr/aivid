@@ -29,6 +29,7 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 const mediaFiles = new Map();
+const { estimateDuration } = require("./duration.js");
 const { Store, splitScenes, buildPrompt } = require("./core.cjs");
 const { Ltx } = require("./ltx.cjs");
 const exec = promisify(execFile);
@@ -155,7 +156,7 @@ async function runQueue() {
           const request = {
             prompt: buildPrompt(p, scene.prompt, scene.characterIds),
             resolution: p.settings.resolution,
-            duration: scene.duration,
+            duration: scene.duration ?? estimateDuration(scene.prompt),
             fps: p.settings.fps,
             aspectRatio: p.settings.aspectRatio,
             model: "fast",

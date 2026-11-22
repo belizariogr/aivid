@@ -100,7 +100,7 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
   let view = await invoke("save-project", {
     name: "História",
     scenes: [
-      { name: "Antes", prompt: "Primeira ação", duration: 5 },
+      { name: "Antes", prompt: "Primeira ação. Duração: 6 segundos." },
       { name: "Depois", prompt: "Segunda ação", duration: 2 },
     ],
   });
@@ -132,6 +132,15 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
     fs.readFileSync(path.join(jobs[0].folder, "cena-02.json")),
   );
   assert.equal(metadata.request.audio, false);
+  assert.equal(p.scenes[0].duration, null);
+  await invoke("enqueue", p.id, p.scenes[0].id);
+  for (let n = 0; n < 100; n++) {
+    await new Promise((r) => setTimeout(r, 10));
+    jobs = (await invoke("library")).jobs;
+    if (["complete", "error"].includes(jobs[1].status)) break;
+  }
+  assert.equal(jobs[1].status, "complete", jobs[1].error);
+  assert.equal(requests[1].duration, 6);
   const bad = await handlers
     .get("library")({ senderFrame: { url: "https://example.com" } })
     .catch(() => null);

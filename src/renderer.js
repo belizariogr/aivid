@@ -12,7 +12,7 @@ let data = { projects: [], jobs: [] },
   selected = null,
   editingCharacter = null,
   toastTimer;
-const durations = [2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20];
+const { durations, estimateDuration } = window.aividDuration;
 function toast(message, error = false) {
   $("toast").textContent = message;
   $("toast").classList.toggle("error", error);
@@ -51,8 +51,8 @@ function readForm() {
     name: $("project-name").value,
     description: $("description").value,
     settings: {
+      ...p.settings,
       resolution: $("resolution").value,
-      duration: Number($("duration").value),
       fps: Number($("fps").value),
       aspectRatio: $("aspect").value,
       seed: Number($("seed").value),
@@ -64,7 +64,7 @@ function readForm() {
       id: el.dataset.id,
       name: el.querySelector(".scene-name").value,
       prompt: el.querySelector(".scene-prompt").value,
-      duration: Number(el.querySelector(".scene-duration").value),
+      duration: Number(el.querySelector(".scene-duration").value) || null,
       reference: el.querySelector(".scene-reference").value,
       characterIds: [...el.querySelectorAll(".scene-cast input:checked")].map(
         (i) => i.value,
@@ -101,9 +101,6 @@ function render() {
   $("description").value = p.description;
   $("model").value = p.settings.modelId;
   $("resolution").value = p.settings.resolution;
-  $("duration").innerHTML = durations
-    .map((d) => option(d, `${d} segundos`, d === p.settings.duration))
-    .join("");
   $("fps").value = p.settings.fps;
   $("aspect").value = p.settings.aspectRatio;
   $("seed").value = p.settings.seed;
@@ -124,7 +121,7 @@ function render() {
     (p.scenes || [])
       .map(
         (s, i) =>
-          `<section class="scene-card" data-id="${esc(s.id)}"><div class="scene-heading"><span class="scene-number">${String(i + 1).padStart(2, "0")}</span><input class="scene-name" aria-label="Nome da cena ${i + 1}" value="${esc(s.name)}" maxlength="100"><button class="remove-scene" title="Mover para cima" data-action="up">↑</button><button class="remove-scene" title="Mover para baixo" data-action="down">↓</button><button class="remove-scene" title="Remover cena" data-action="remove">×</button></div><div class="scene-cast">${p.characters.map((c) => `<label><input type="checkbox" value="${esc(c.id)}" ${(s.characterIds || []).includes(c.id) ? "checked" : ""}>${esc(c.name)}</label>`).join("")}</div><textarea class="scene-prompt" aria-label="Prompt da cena ${i + 1}" rows="5" placeholder="Descreva a ação desta cena, os gestos e o movimento da câmera…">${esc(s.prompt)}</textarea><div class="scene-controls"><label>Duração<select class="scene-duration">${durations.map((d) => option(d, `${d}s`, d === s.duration)).join("")}</select></label><label>Imagem inicial<select class="scene-reference">${option("", "Só o prompt / continuidade", !s.reference)}${s.image ? option("scene", "Imagem desta cena", s.reference === "scene") : ""}${p.characters.map((c) => option(c.id, c.name, s.reference === c.id)).join("")}</select></label></div>${s.preview ? `<img class="scene-thumb" src="${esc(s.preview)}" alt="Imagem inicial da cena ${i + 1}">` : ""}<div class="scene-actions"><button class="small secondary" data-action="image">＋ Imagem da cena</button><button class="small secondary" data-action="generate">Gerar só esta cena ↗</button></div></section>`,
+          `<section class="scene-card" data-id="${esc(s.id)}"><div class="scene-heading"><span class="scene-number">${String(i + 1).padStart(2, "0")}</span><input class="scene-name" aria-label="Nome da cena ${i + 1}" value="${esc(s.name)}" maxlength="100"><button class="remove-scene" title="Mover para cima" data-action="up">↑</button><button class="remove-scene" title="Mover para baixo" data-action="down">↓</button><button class="remove-scene" title="Remover cena" data-action="remove">×</button></div><div class="scene-cast">${p.characters.map((c) => `<label><input type="checkbox" value="${esc(c.id)}" ${(s.characterIds || []).includes(c.id) ? "checked" : ""}>${esc(c.name)}</label>`).join("")}</div><textarea class="scene-prompt" aria-label="Prompt da cena ${i + 1}" rows="5" placeholder="Descreva a ação desta cena, os gestos e o movimento da câmera…">${esc(s.prompt)}</textarea><div class="scene-controls"><label>Duração<select class="scene-duration">${option("", "Automática", s.duration == null)}${durations.map((d) => option(d, `${d}s`, d === s.duration)).join("")}</select></label><label>Imagem inicial<select class="scene-reference">${option("", "Só o prompt / continuidade", !s.reference)}${s.image ? option("scene", "Imagem desta cena", s.reference === "scene") : ""}${p.characters.map((c) => option(c.id, c.name, s.reference === c.id)).join("")}</select></label></div>${s.preview ? `<img class="scene-thumb" src="${esc(s.preview)}" alt="Imagem inicial da cena ${i + 1}">` : ""}<div class="scene-actions"><button class="small secondary" data-action="image">＋ Imagem da cena</button><button class="small secondary" data-action="generate">Gerar só esta cena ↗</button></div></section>`,
       )
       .join("") || '<p class="hint">Adicione a primeira cena para começar.</p>';
   updateCount();
@@ -132,12 +129,28 @@ function render() {
 }
 function updateCount() {
   const cards = [...document.querySelectorAll(".scene-card")];
-  const seconds = cards.reduce(
-    (n, c) => n + Number(c.querySelector(".scene-duration").value),
-    0,
-  );
+  let estimated = false;
+  let missing = false;
+  let seconds = 0;
+  for (const card of cards) {
+    const selector = card.querySelector(".scene-duration");
+    const estimate = estimateDuration(
+      card.querySelector(".scene-prompt").value,
+    );
+    selector.options[0].textContent =
+      estimate === null ? "Automática" : `Automática (~${estimate} s)`;
+    const manual = Number(selector.value);
+    estimated ||= !manual && estimate !== null;
+    missing ||= !manual && estimate === null;
+    seconds += manual || estimate || 0;
+  }
+  const total = missing
+    ? " · escreva os prompts para estimar"
+    : cards.length
+      ? ` · ${estimated ? "~" : ""}${seconds} s no total`
+      : "";
   $("scene-count").textContent =
-    `${cards.length} cena${cards.length === 1 ? "" : "s"} · ${seconds}s no total`;
+    `${cards.length} cena${cards.length === 1 ? "" : "s"}${total}`;
   $("generate").disabled = cards.length === 0;
 }
 function renderJobs() {
@@ -189,7 +202,7 @@ $("new-form").onsubmit = (e) => {
     if (project()) await save();
     data = await api.saveProject({
       name: $("new-name").value,
-      scenes: [{ name: "Cena 1", prompt: "", duration: 10 }],
+      scenes: [{ name: "Cena 1", prompt: "" }],
     });
     selected = data.projects[0].id;
     $("new-dialog").close();
@@ -257,12 +270,11 @@ $("add-scene").onclick = () =>
     p.scenes.push({
       name: `Cena ${p.scenes.length + 1}`,
       prompt: "",
-      duration: p.settings.duration,
       characterIds: p.characters.map((c) => c.id),
     });
     updateData(await api.saveProject(p));
   });
-$("scenes").onchange = updateCount;
+$("scenes").oninput = updateCount;
 $("scenes").onclick = (e) => {
   const button = e.target.closest("[data-action]");
   if (!button) return;
