@@ -64,6 +64,8 @@ Cada clipe tem de 2 a 20 segundos, conforme as opções do modelo e o hardware. 
 
 Cenas novas usam **Duração automática**. O Aivid estima o tempo a partir das ações e pausas descritas no prompt e mostra a estimativa enquanto você escreve. O valor usa os tempos disponíveis no LTX e tem limite de 20 segundos por clipe. Se precisar de um tempo específico, escolha os segundos no cartão da cena. Cenas já salvas com duração fixa mantêm esse valor até você escolher **Automática**.
 
+No painel do projeto, adicione uma **imagem do ambiente**. Cenas com **Padrão do projeto** usam essa imagem quando geradas isoladamente. Em uma sequência com continuidade ativada, você pode escolher **Ambiente do projeto** em uma cena para voltar à imagem da locação. Use uma imagem própria para mudar de locação, enquadramento ou posição dos personagens.
+
 A opção de continuidade está desligada por padrão. Quando ligada, usa o último quadro da cena anterior apenas se a próxima não tiver uma referência explícita. Ela não é necessária para clipes independentes e não garante identidade perfeita. Referências próprias por cena dão mais controle e evitam acumular alterações visuais.
 
 ### Saída

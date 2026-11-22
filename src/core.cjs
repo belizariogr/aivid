@@ -74,6 +74,7 @@ function normalizeProject(input, existing) {
     outputDir: existing?.outputDir || "",
     characters: existing?.characters || [],
     sceneImage: existing?.sceneImage || null,
+    environmentImage: existing?.environmentImage || null,
     settings,
     createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),

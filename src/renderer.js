@@ -99,6 +99,14 @@ function render() {
   $("subtitle").textContent = "Seu elenco, suas cenas. Um clipe de cada vez.";
   $("project-name").value = p.name;
   $("description").value = p.description;
+  const environment = $("environment-preview");
+  environment.hidden = !p.environmentPreview;
+  if (p.environmentPreview) environment.src = p.environmentPreview;
+  else environment.removeAttribute("src");
+  $("choose-environment").textContent = p.environmentImage
+    ? "Trocar imagem do ambiente"
+    : "Adicionar imagem do ambiente";
+  $("remove-environment").hidden = !p.environmentImage;
   $("model").value = p.settings.modelId;
   $("resolution").value = p.settings.resolution;
   $("fps").value = p.settings.fps;
@@ -121,7 +129,7 @@ function render() {
     (p.scenes || [])
       .map(
         (s, i) =>
-          `<section class="scene-card" data-id="${esc(s.id)}"><div class="scene-heading"><span class="scene-number">${String(i + 1).padStart(2, "0")}</span><input class="scene-name" aria-label="Nome da cena ${i + 1}" value="${esc(s.name)}" maxlength="100"><button class="remove-scene" title="Mover para cima" data-action="up">↑</button><button class="remove-scene" title="Mover para baixo" data-action="down">↓</button><button class="remove-scene" title="Remover cena" data-action="remove">×</button></div><div class="scene-cast">${p.characters.map((c) => `<label><input type="checkbox" value="${esc(c.id)}" ${(s.characterIds || []).includes(c.id) ? "checked" : ""}>${esc(c.name)}</label>`).join("")}</div><textarea class="scene-prompt" aria-label="Prompt da cena ${i + 1}" rows="5" placeholder="Descreva a ação desta cena, os gestos e o movimento da câmera…">${esc(s.prompt)}</textarea><div class="scene-controls"><label>Duração<select class="scene-duration">${option("", "Automática", s.duration == null)}${durations.map((d) => option(d, `${d}s`, d === s.duration)).join("")}</select></label><label>Imagem inicial<select class="scene-reference">${option("", "Só o prompt / continuidade", !s.reference)}${s.image ? option("scene", "Imagem desta cena", s.reference === "scene") : ""}${p.characters.map((c) => option(c.id, c.name, s.reference === c.id)).join("")}</select></label></div>${s.preview ? `<img class="scene-thumb" src="${esc(s.preview)}" alt="Imagem inicial da cena ${i + 1}">` : ""}<div class="scene-actions"><button class="small secondary" data-action="image">＋ Imagem da cena</button><button class="small secondary" data-action="generate">Gerar só esta cena ↗</button></div></section>`,
+          `<section class="scene-card" data-id="${esc(s.id)}"><div class="scene-heading"><span class="scene-number">${String(i + 1).padStart(2, "0")}</span><input class="scene-name" aria-label="Nome da cena ${i + 1}" value="${esc(s.name)}" maxlength="100"><button class="remove-scene" title="Mover para cima" data-action="up">↑</button><button class="remove-scene" title="Mover para baixo" data-action="down">↓</button><button class="remove-scene" title="Remover cena" data-action="remove">×</button></div><div class="scene-cast">${p.characters.map((c) => `<label><input type="checkbox" value="${esc(c.id)}" ${(s.characterIds || []).includes(c.id) ? "checked" : ""}>${esc(c.name)}</label>`).join("")}</div><textarea class="scene-prompt" aria-label="Prompt da cena ${i + 1}" rows="5" placeholder="Descreva a ação desta cena, os gestos e o movimento da câmera…">${esc(s.prompt)}</textarea><div class="scene-controls"><label>Duração<select class="scene-duration">${option("", "Automática", s.duration == null)}${durations.map((d) => option(d, `${d}s`, d === s.duration)).join("")}</select></label><label>Imagem inicial<select class="scene-reference">${option("", "Padrão do projeto", !s.reference)}${p.environmentImage ? option("environment", "Ambiente do projeto", s.reference === "environment") : ""}${option("text", "Só o prompt", s.reference === "text")}${s.image ? option("scene", "Imagem desta cena", s.reference === "scene") : ""}${p.characters.map((c) => option(c.id, c.name, s.reference === c.id)).join("")}</select></label></div>${s.preview ? `<img class="scene-thumb" src="${esc(s.preview)}" alt="Imagem inicial da cena ${i + 1}">` : ""}<div class="scene-actions"><button class="small secondary" data-action="image">＋ Imagem da cena</button><button class="small secondary" data-action="generate">Gerar só esta cena ↗</button></div></section>`,
       )
       .join("") || '<p class="hint">Adicione a primeira cena para começar.</p>';
   updateCount();
@@ -228,6 +236,16 @@ $("choose-output").onclick = () =>
   action(async () => {
     await save();
     updateData(await api.chooseOutput(selected));
+  });
+$("choose-environment").onclick = () =>
+  action(async () => {
+    await save();
+    updateData(await api.chooseEnvironment(selected));
+  });
+$("remove-environment").onclick = () =>
+  action(async () => {
+    await save();
+    updateData(await api.removeEnvironment(selected));
   });
 $("add-character").onclick = () =>
   action(async () => {

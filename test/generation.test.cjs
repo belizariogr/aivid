@@ -63,7 +63,11 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
       },
       stop() {},
     },
-    nativeImage: {},
+    nativeImage: {
+      createFromPath: () => ({
+        resize: () => ({ toDataURL: () => "data:image/png;base64," }),
+      }),
+    },
     dialog: {},
     shell: {},
   };
@@ -110,6 +114,16 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
     filePaths: [root],
   });
   await invoke("choose-output", p.id);
+  const environment = path.join(root, "praça.png");
+  fs.writeFileSync(environment, "reference image");
+  electron.dialog.showOpenDialog = async () => ({
+    canceled: false,
+    filePaths: [environment],
+  });
+  const withEnvironment = await invoke("scene-image", p.id);
+  const savedEnvironment = withEnvironment.projects[0].environmentImage;
+  assert.notEqual(savedEnvironment, environment);
+  await invoke("save-project", p);
   await invoke("enqueue", p.id, p.scenes[1].id);
   let jobs;
   for (let n = 0; n < 100; n++) {
@@ -141,6 +155,8 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
   }
   assert.equal(jobs[1].status, "complete", jobs[1].error);
   assert.equal(requests[1].duration, 6);
+  assert.equal(requests[0].imagePath, savedEnvironment);
+  assert.equal(requests[1].imagePath, savedEnvironment);
   const bad = await handlers
     .get("library")({ senderFrame: { url: "https://example.com" } })
     .catch(() => null);

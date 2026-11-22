@@ -70,6 +70,11 @@ function library() {
     jobs: store.data.jobs,
   };
   for (const p of view.projects) {
+    if (p.environmentImage)
+      p.environmentPreview = nativeImage
+        .createFromPath(p.environmentImage)
+        .resize({ width: 400 })
+        .toDataURL();
     for (const c of p.characters) {
       try {
         c.preview = nativeImage
@@ -127,14 +132,18 @@ async function runQueue() {
         await fsp.mkdir(dir, { recursive: true });
         job.folder = dir;
         persist();
-        let image = null;
+        let previousFrame = null;
         for (let i = 0; i < job.scenes.length; i++) {
           if (job.cancelRequested) break;
           const scene = job.scenes[i];
+          let image;
           if (scene.reference === "scene") image = scene.image;
+          else if (scene.reference === "text") image = null;
+          else if (scene.reference === "environment")
+            image = p.environmentImage;
           else if (scene.reference)
             image = p.characters.find((c) => c.id === scene.reference)?.image;
-          else if (!p.settings.chain) image = null;
+          else image = previousFrame || p.environmentImage;
           job.scene = i + 1;
           job.progress = 0;
           job.phase = "Preparando a cena";
@@ -196,7 +205,7 @@ async function runQueue() {
             ),
           );
           if (p.settings.chain && i < job.scenes.length - 1) {
-            image = path.join(dir, `referencia-${i + 1}.png`);
+            previousFrame = path.join(dir, `referencia-${i + 1}.png`);
             await exec(binary, [
               "-y",
               "-sseof",
@@ -207,7 +216,7 @@ async function runQueue() {
               "1",
               "-update",
               "1",
-              image,
+              previousFrame,
             ]);
           }
           persist();
@@ -328,19 +337,32 @@ app.whenReady().then(() => {
   handle("scene-image", async (id, sid) => {
     const p = store.project(id);
     const scene = p.scenes.find((s) => s.id === sid);
-    if (!scene) throw new Error("Cena não encontrada.");
+    if (sid && !scene) throw new Error("Cena não encontrada.");
     const r = await dialog.showOpenDialog(window, {
-      title: "Imagem inicial da cena",
+      title: scene ? "Imagem inicial da cena" : "Imagem do ambiente",
       filters: [
         { name: "Imagens", extensions: ["png", "jpg", "jpeg", "webp"] },
       ],
       properties: ["openFile"],
     });
     if (!r.canceled) {
-      scene.image = store.asset(id, r.filePaths[0]);
-      scene.reference = "scene";
+      const image = store.asset(id, r.filePaths[0]);
+      if (scene) {
+        scene.image = image;
+        scene.reference = "scene";
+      } else {
+        p.environmentImage = image;
+      }
       store.save();
     }
+    return library();
+  });
+  handle("remove-environment", (id) => {
+    const p = store.project(id);
+    p.environmentImage = null;
+    for (const scene of p.scenes)
+      if (scene.reference === "environment") scene.reference = "";
+    store.save();
     return library();
   });
   handle("connect", () => engine.connect());
@@ -360,9 +382,11 @@ app.whenReady().then(() => {
       splitScenes(s.prompt);
       if (s.reference === "scene" && !s.image)
         throw new Error(`Escolha a imagem inicial de ${s.name}.`);
+      if (s.reference === "environment" && !p.environmentImage)
+        throw new Error("Adicione uma imagem do ambiente ao projeto.");
       if (
         s.reference &&
-        s.reference !== "scene" &&
+        !["scene", "text", "environment"].includes(s.reference) &&
         !p.characters.some((c) => c.id === s.reference)
       )
         throw new Error(
