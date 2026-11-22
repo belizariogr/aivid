@@ -431,7 +431,9 @@ app.whenReady().then(() => {
           `Cast available in this scene: ${cast.join("; ")}`,
         imagePath &&
           "Preserve the reference art direction: rendering medium, linework, textures, palette and lighting. Apply the requested changes without redesigning the rest.",
-        `Create a single opening still for this scene. ${prompt}`,
+        input.scenePreview
+          ? `Create a single preview image of the opening moment of this scene. Show the characters and props in their starting positions. Use the actions as context for the still. ${prompt}`
+          : `Create a single opening still for this scene. ${prompt}`,
         input.backgroundOnly &&
           "Create an empty background plate. Omit all characters, people and animals, including any appearing in the reference. Preserve the environment layout and art direction unless the request specifies changes.",
         "No captions or logos.",

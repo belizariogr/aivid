@@ -52,6 +52,8 @@ O empacotamento usa Node 24 via `npx`, sem trocar o Node global da máquina. O a
 7. Use as setas ↑ e ↓ nos cartões para ordenar as cenas.
 8. Use **Ver sequência** para assistir à ordem das cenas. Clique em um capítulo para pular para ele.
 
+**Gerar prévia da cena** cria uma imagem estática a partir do prompt da cena, das descrições do elenco selecionado e da referência visual escolhida. Revise a prévia antes de renderizar. Se aprovar, ela será salva como imagem inicial da cena e ficará disponível na biblioteca.
+
 ### Clipe contínuo e fundo
 
 **Gerar clipe contínuo** usa o quadro inicial da primeira cena e reúne as ações na ordem do projeto, com os tempos de cada cena no prompt. O LTX aceita até 20 segundos por clipe. O resultado fica em **Fila e vídeos** e é salvo como `sequencia.mp4`. A imagem inicial e as instruções de estilo ajudam a manter a aparência ao longo do clipe.
