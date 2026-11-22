@@ -29,7 +29,7 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 const mediaFiles = new Map();
-const { estimateDuration, sequenceDuration } = require("./duration.js");
+const { estimateDuration, modelDuration } = require("./duration.js");
 const {
   Store,
   splitScenes,
@@ -114,7 +114,7 @@ async function ffmpeg() {
     return (await exec("/usr/bin/which", ["ffmpeg"])).stdout.trim();
   } catch {
     throw new Error(
-      "Instale FFmpeg (brew install ffmpeg) para encadear cenas ou salvar quadros dos clipes.",
+      "Instale FFmpeg (brew install ffmpeg) para recortar vídeos, encadear cenas ou salvar quadros.",
     );
   }
 }
@@ -135,7 +135,13 @@ async function runQueue() {
         const p = job.project;
         await fsp.access(p.outputDir, fs.constants.W_OK);
         let binary;
-        if (p.settings.chain && job.scenes.length > 1) binary = await ffmpeg();
+        const needsTrim = job.scenes.some(
+          (scene) =>
+            scene.duration != null &&
+            modelDuration(scene.duration) !== scene.duration,
+        );
+        if (needsTrim || (p.settings.chain && job.scenes.length > 1))
+          binary = await ffmpeg();
         await engine.prepare(p.settings.modelId);
         const dir = path.join(
           p.outputDir,
@@ -178,16 +184,21 @@ async function runQueue() {
               /* A requisição principal apresentará o erro de conexão. */
             }
           }, 2000);
+          const duration = scene.duration ?? estimateDuration(scene.prompt);
+          const renderDuration = modelDuration(duration);
+          const trimOutput = renderDuration !== duration;
           const request = {
             prompt: [
               buildPrompt(p, scene.prompt, scene.characterIds),
+              trimOutput &&
+                `Finish the requested action within the first ${duration} seconds, then hold the final pose through the rest of the clip.`,
               image &&
                 "Use the attached image as the opening frame. Preserve its setting, layout, character appearance and visual style while animating the scene action.",
             ]
               .filter(Boolean)
               .join("\n\n"),
             resolution: p.settings.resolution,
-            duration: scene.duration ?? estimateDuration(scene.prompt),
+            duration: renderDuration,
             fps: p.settings.fps,
             aspectRatio: p.settings.aspectRatio,
             model: "fast",
@@ -209,16 +220,58 @@ async function runQueue() {
             ? "sequencia"
             : `cena-${String(scene.number).padStart(2, "0")}`;
           const out = path.join(dir, `${filename}.mp4`);
-          await fsp.copyFile(
-            result.video_path,
-            out,
-            fs.constants.COPYFILE_EXCL,
-          );
+          if (trimOutput) {
+            job.phase = "Ajustando a duração";
+            persist();
+            const temporaryOutput = path.join(dir, `${filename}-temp.mp4`);
+            try {
+              await exec(binary, [
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                result.video_path,
+                "-t",
+                String(duration),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-movflags",
+                "+faststart",
+                temporaryOutput,
+              ]);
+              if (job.cancelRequested) break;
+              await fsp.rename(temporaryOutput, out);
+            } finally {
+              await fsp.rm(temporaryOutput, { force: true });
+            }
+          } else {
+            await fsp.copyFile(
+              result.video_path,
+              out,
+              fs.constants.COPYFILE_EXCL,
+            );
+          }
           job.files.push(out);
           await fsp.writeFile(
             path.join(dir, `${filename}.json`),
             JSON.stringify(
-              { request, generatedAt: new Date().toISOString() },
+              {
+                request,
+                outputDuration: duration,
+                generatedAt: new Date().toISOString(),
+              },
               null,
               2,
             ),
@@ -346,6 +399,34 @@ app.whenReady().then(() => {
     c.description = String(patch.description || "").slice(0, 3000);
     store.save();
     return library();
+  });
+  handle("open-project-assets", async (id) => {
+    const { id: projectId } = store.project(id);
+    const folder = path.join(store.root, "assets", projectId);
+    await fsp.mkdir(folder, { recursive: true });
+    const error = await shell.openPath(folder);
+    if (error) throw new Error("Não foi possível abrir a pasta do projeto.");
+  });
+  handle("export-character-image", async (id, cid) => {
+    const character = store
+      .project(id)
+      .characters.find((item) => item.id === cid);
+    if (!character?.image) throw new Error("Personagem sem imagem.");
+    const extension = path.extname(character.image);
+    const filename =
+      character.name.replace(/[^\p{L}\p{N} ._-]/gu, "_").trim() || "Personagem";
+    const result = await dialog.showSaveDialog(window, {
+      title: "Salvar imagem do personagem",
+      defaultPath: path.join(
+        app.getPath("pictures"),
+        `${filename}${extension}`,
+      ),
+      filters: [{ name: "Imagem", extensions: [extension.slice(1)] }],
+    });
+    if (result.canceled || !result.filePath) return false;
+    if (path.resolve(result.filePath) !== path.resolve(character.image))
+      await fsp.copyFile(character.image, result.filePath);
+    return true;
   });
   handle("remove-character", (id, cid) => {
     const p = store.project(id);
@@ -540,7 +621,7 @@ app.whenReady().then(() => {
         elapsed += scene.duration ?? estimateDuration(scene.prompt);
         return `${start}–${elapsed} seconds: ${scene.prompt.trim()}`;
       });
-      const duration = sequenceDuration(elapsed);
+      const duration = modelDuration(elapsed);
       if (duration === null)
         throw new Error(
           "A sequência ultrapassa 20 s. Encurte as cenas para gerar em um único clipe.",
@@ -552,15 +633,13 @@ app.whenReady().then(() => {
           ...first,
           id: randomUUID(),
           name: "Sequência contínua",
-          duration,
+          duration: elapsed,
           characterIds: [
             ...new Set(scenes.flatMap((scene) => scene.characterIds || [])),
           ],
           prompt: [
             "One continuous shot. Keep the same rendering style, linework, color palette, lighting, character designs, and set layout throughout. Use continuous motion and avoid cuts or restarts.",
             ...beats,
-            duration > elapsed &&
-              `After ${elapsed} seconds, hold the final action naturally until the end.`,
           ]
             .filter(Boolean)
             .join("\n"),

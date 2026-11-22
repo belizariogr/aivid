@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld("aivid", {
   chooseOutput: (id) => invoke("choose-output", id),
   addCharacter: (id, name) => invoke("add-character", id, name),
   editCharacter: (id, cid, p) => invoke("edit-character", id, cid, p),
+  openProjectAssets: (id) => invoke("open-project-assets", id),
+  exportCharacterImage: (id, cid) => invoke("export-character-image", id, cid),
   removeCharacter: (id, cid) => invoke("remove-character", id, cid),
   sceneImage: (id, sid) => invoke("scene-image", id, sid),
   chooseEnvironment: (id) => invoke("scene-image", id),

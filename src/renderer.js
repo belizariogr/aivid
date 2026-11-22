@@ -12,7 +12,7 @@ let data = { projects: [], jobs: [] },
   selected = null,
   editingCharacter = null,
   toastTimer;
-const { durations, estimateDuration, sequenceDuration } = window.aividDuration;
+const { durations, estimateDuration, modelDuration } = window.aividDuration;
 function toast(message, error = false) {
   $("toast").textContent = message;
   $("toast").classList.toggle("error", error);
@@ -165,13 +165,13 @@ function updateCount() {
     `${cards.length} cena${cards.length === 1 ? "" : "s"}${total}`;
   $("generate").disabled = cards.length === 0;
   const continuous = $("generate-continuous");
-  const clipDuration = sequenceDuration(seconds);
+  const clipDuration = modelDuration(seconds);
   continuous.disabled = !cards.length || emptyPrompt || clipDuration === null;
   continuous.textContent =
     seconds > 20
       ? "Clipe contínuo · limite de 20 s"
       : !emptyPrompt && seconds > 0
-        ? `✦ Gerar clipe contínuo · ${clipDuration} s`
+        ? `✦ Gerar clipe contínuo · ${seconds} s`
         : "✦ Gerar clipe contínuo";
 }
 function renderJobs() {
@@ -274,6 +274,13 @@ $("characters").onclick = (e) => {
   $("character-description").value = c.description;
   $("character-dialog").showModal();
 };
+$("open-project-assets").onclick = () =>
+  action(() => api.openProjectAssets(selected));
+$("character-export").onclick = () =>
+  action(async () => {
+    if (await api.exportCharacterImage(selected, editingCharacter))
+      toast("Imagem salva no disco.");
+  });
 $("character-cancel").onclick = () => $("character-dialog").close();
 $("character-form").onsubmit = (e) => {
   e.preventDefault();

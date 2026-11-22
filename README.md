@@ -21,7 +21,7 @@ O Aivid não é um editor de vídeo. Ele mantém os clipes separados para você 
 - [LTX Desktop](https://github.com/Lightricks/LTX-Desktop) instalado em `/Applications/LTX Desktop.app`, aberto e inicializado.
 - Um modelo Fast e o **encoder de texto local** instalados no LTX Desktop. A integração foi validada com LTX Desktop 1.3.2 e LTX 2.3 Fast.
 - Node.js 22.12+ para desenvolver a partir do código. O `.app` empacotado não precisa de Node instalado.
-- FFmpeg (`brew install ffmpeg`) para continuidade entre cenas ou para salvar quadros dos clipes.
+- FFmpeg (`brew install ffmpeg`) para recortar vídeos, encadear cenas ou salvar quadros dos clipes.
 
 O Aivid utiliza a API local interna do LTX Desktop, que pode mudar entre versões. Ele não inclui os modelos nem baixa pesos automaticamente.
 
@@ -44,7 +44,7 @@ O empacotamento usa Node 24 via `npx`, sem trocar o Node global da máquina. O a
 ## Fluxo recomendado
 
 1. Crie um projeto. Use **Pré-prompt do projeto** para definir estilo, câmera, iluminação e outras instruções recorrentes. O Aivid inclui esse texto nas prévias, nos ambientes e nos vídeos. Nos cartões das cenas, escreva apenas o que muda ou acontece.
-2. Adicione uma imagem de cada personagem; clique nela para editar nome e descrição.
+2. Adicione uma imagem de cada personagem. Clique nela para editar os dados ou salvar uma cópia da imagem no disco. Use **Abrir pasta de arquivos** para acessar as imagens armazenadas no projeto.
 3. Adicione cenas, escreva o prompt de cada uma e marque os personagens presentes.
 4. No cartão da cena, use **Gerar ambiente** para criar um quadro inicial pelo texto, com uma referência opcional. Ajuste o prompt e gere novas prévias até aprovar uma. O quadro aprovado entra na biblioteca do projeto e pode ser escolhido em outras cenas. Também é possível importar um quadro pronto.
 5. Escolha resolução, duração e pasta de saída.
@@ -70,7 +70,7 @@ Para uma cena com dois personagens, prefira uma imagem inicial já composta com 
 
 ### Duração e continuidade
 
-Cada clipe tem de 2 a 20 segundos, conforme as opções do modelo e o hardware. Um prompt longo não se transforma automaticamente em um episódio de vários minutos: divida a história em cenas.
+A duração manual aceita qualquer número inteiro de 2 a 20 segundos. Quando o LTX exige uma duração maior, o Aivid gera o próximo tempo compatível e recorta o arquivo ao tempo escolhido. Por exemplo, para 15 segundos, o LTX gera 20 e o Aivid salva um clipe de 15 segundos.
 
 Cenas novas usam **Duração automática**. O Aivid estima o tempo a partir das ações e pausas descritas no prompt e mostra a estimativa enquanto você escreve. O valor usa os tempos disponíveis no LTX e tem limite de 20 segundos por clipe. Se precisar de um tempo específico, escolha os segundos no cartão da cena. Cenas já salvas com duração fixa mantêm esse valor até você escolher **Automática**.
 

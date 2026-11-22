@@ -1,6 +1,8 @@
 // Shared by the scene editor and the render queue.
 (() => {
-  const durations = Object.freeze([2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20]);
+  const durations = Object.freeze(
+    Array.from({ length: 19 }, (_, index) => index + 2),
+  );
   // Use Fast durations shared by 540p, 720p and 1080p.
   const automaticDurations = [2, 3, 4, 5, 6, 8, 10, 20];
   const actionBreak =
@@ -37,11 +39,11 @@
     );
   }
 
-  function sequenceDuration(seconds) {
+  function modelDuration(seconds) {
     return automaticDurations.find((duration) => duration >= seconds) ?? null;
   }
 
-  const api = { durations, estimateDuration, sequenceDuration };
+  const api = { durations, estimateDuration, modelDuration };
   if (typeof module !== "undefined") module.exports = api;
   else window.aividDuration = api;
 })();

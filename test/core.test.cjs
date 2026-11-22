@@ -55,7 +55,7 @@ test("projeto preserva imagens e duração das cenas ao salvar, sem aceitar cami
 test("valida parâmetros e prompts vazios", () => {
   assert.throws(() => normalizeProject({ name: " " }));
   assert.throws(() =>
-    normalizeProject({ name: "A", settings: { duration: 15 } }),
+    normalizeProject({ name: "A", settings: { duration: 21 } }),
   );
   assert.throws(() => normalizeProject({ name: "A", settings: { seed: -1 } }));
   assert.throws(() => splitScenes(" "));
