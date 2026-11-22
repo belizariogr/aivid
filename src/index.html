@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'none'; media-src aivid-media:; object-src 'none'; base-uri 'none'"
+    />
+    <title>Aivid</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="titlebar">
+      <span>AIVID <b>LOCAL STUDIO</b></span
+      ><span id="connection" class="badge">LTX desconectado</span>
+    </div>
+    <aside>
+      <div class="brand">
+        <span class="brandmark">a</span>
+        <div>Aivid<small>Suas histórias, em movimento.</small></div>
+      </div>
+      <div class="sideheading">
+        PROJETOS <button id="new-project" title="Novo projeto">＋</button>
+      </div>
+      <nav id="projects"></nav>
+      <div class="sidebar-bottom">
+        <button id="open-ltx" class="secondary wide">Abrir LTX Desktop ↗</button
+        ><button id="connect" class="text-button wide">
+          Conectar novamente
+        </button>
+        <p>Geração no seu Mac.<br />Mantenha os dois apps abertos.</p>
+      </div>
+    </aside>
+    <main>
+      <header>
+        <div>
+          <span class="eyebrow">SEU ESTÚDIO DE ANIMAÇÃO</span>
+          <h1 id="heading">Um lugar para suas histórias.</h1>
+          <p id="subtitle">Escolha um projeto ou comece uma nova ideia.</p>
+        </div>
+        <div class="header-actions">
+          <button id="watch" class="secondary" hidden>▷ Ver sequência</button
+          ><button id="save" class="secondary" hidden>Salvar projeto</button>
+        </div>
+      </header>
+      <section id="empty" class="empty">
+        <div class="empty-symbol">✦</div>
+        <h2>Do personagem à primeira cena.</h2>
+        <p>
+          Guarde seu elenco, escolha o visual e descreva o que acontece.<br />O
+          Aivid organiza e gera clipes separados na pasta que você escolher.
+        </p>
+        <button id="empty-new" class="primary">
+          Criar meu primeiro projeto
+        </button>
+      </section>
+      <div id="editor" hidden>
+        <div class="workspace">
+          <section class="compose">
+            <article class="panel">
+              <div class="panel-heading">
+                <h2>O projeto</h2>
+                <span>01</span>
+              </div>
+              <label
+                >Nome<input
+                  id="project-name"
+                  maxlength="100"
+                  placeholder="O mistério do moinho parado" /></label
+              ><label
+                >Cenário e continuidade<textarea
+                  id="description"
+                  rows="3"
+                  placeholder="Estilo visual, cenário, iluminação e o que deve se manter igual em todas as cenas…"
+                ></textarea>
+              </label>
+            </article>
+            <article class="panel">
+              <div class="panel-heading">
+                <h2>Personagens</h2>
+                <button id="add-character" class="small secondary">
+                  ＋ Adicionar imagem
+                </button>
+              </div>
+              <div id="characters" class="characters"></div>
+              <p class="hint">
+                Salve o nome e a descrição de cada personagem. Para preservar o
+                visual, escolha abaixo uma imagem inicial que já mostre os
+                personagens da cena.
+              </p>
+            </article>
+            <article class="panel prompt-panel">
+              <div class="panel-heading">
+                <h2>Cenas da história</h2>
+                <button id="add-scene" class="small secondary">
+                  ＋ Nova cena
+                </button>
+              </div>
+              <p class="hint scene-intro">
+                Um prompt, uma referência e um clipe por cena. A edição final é
+                sua.
+              </p>
+              <div id="scenes"></div>
+              <div class="generate-footer">
+                <span id="scene-count">0 cenas</span
+                ><button id="generate" class="primary">
+                  ✦ Gerar todas as cenas
+                </button>
+              </div>
+            </article>
+          </section>
+          <section class="settings-column">
+            <article class="panel settings">
+              <div class="panel-heading">
+                <h2>Geração</h2>
+                <span class="dot"></span>
+              </div>
+              <label
+                >Modelo local<select id="model">
+                  <option value="ltx-2.3-22b-distilled-1.1">
+                    LTX 2.3 Fast
+                  </option>
+                  <option value="ltx-2.5-22b-distilled">LTX 2.5 Fast</option>
+                  <option value="ltx-2.3-22b-distilled">
+                    LTX 2.3 Fast (1.0)
+                  </option>
+                </select></label
+              >
+              <div class="field-row">
+                <label
+                  >Resolução<select id="resolution">
+                    <option>540p</option>
+                    <option selected>720p</option>
+                    <option>1080p</option>
+                  </select></label
+                ><label>Duração por cena<select id="duration"></select></label>
+              </div>
+              <div class="field-row">
+                <label
+                  >Formato<select id="aspect">
+                    <option>16:9</option>
+                    <option>9:16</option>
+                    <option>1:1</option>
+                  </select></label
+                ><label
+                  >Quadros/s<select id="fps">
+                    <option>24</option>
+                    <option>25</option>
+                  </select></label
+                >
+              </div>
+              <label
+                >Semente<input
+                  id="seed"
+                  type="number"
+                  min="0"
+                  max="2147483647"
+                  value="42" /></label
+              ><label class="check"
+                ><input id="chain" type="checkbox" /><span
+                  >Continuar a imagem entre cenas<small
+                    >Opcional: o último quadro vira a próxima referência.</small
+                  ></span
+                ></label
+              >
+              <div class="divider"></div>
+              <label>Salvar os vídeos em</label
+              ><button id="choose-output" class="folder">
+                ⌁ Escolher pasta
+              </button>
+              <p id="output-path" class="path">Nenhuma pasta selecionada</p>
+              <p class="hint">
+                Os clipes são gerados sem áudio. Música e efeitos podem ser
+                adicionados na edição.
+              </p>
+            </article>
+            <article class="note">
+              <span>PARA DEIXAR RODANDO</span>
+              <p>
+                Deixe o Mac na tomada e com a tampa aberta. O Aivid impede o
+                repouso enquanto processa a fila.
+              </p>
+            </article>
+          </section>
+        </div>
+        <section class="history">
+          <div class="section-heading">
+            <h2>Fila e vídeos</h2>
+            <span id="jobs-count"></span>
+          </div>
+          <div id="jobs"></div>
+        </section>
+      </div>
+    </main>
+    <div id="toast" role="status" hidden></div>
+    <dialog id="new-dialog">
+      <form id="new-form">
+        <span class="eyebrow">UMA NOVA HISTÓRIA</span>
+        <h2>Criar projeto</h2>
+        <label
+          >Nome do projeto<input
+            id="new-name"
+            required
+            maxlength="100"
+            placeholder="Minha próxima história"
+            autofocus
+        /></label>
+        <div class="dialog-actions">
+          <button type="button" id="new-cancel" class="secondary">
+            Cancelar</button
+          ><button class="primary">Criar projeto</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="character-dialog">
+      <form id="character-form">
+        <h2>Seu personagem</h2>
+        <label>Nome<input id="character-name" required maxlength="100" /></label
+        ><label
+          >Aparência e personalidade<textarea
+            id="character-description"
+            rows="5"
+            placeholder="Capivara marrom-canela de jardineira verde. Curiosa, calma e expressiva…"
+          ></textarea>
+        </label>
+        <div class="dialog-actions">
+          <button type="button" id="character-remove" class="danger">
+            Remover</button
+          ><button type="button" id="character-cancel" class="secondary">
+            Cancelar</button
+          ><button class="primary">Salvar</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="player-dialog">
+      <div class="player-title">
+        <div>
+          <span class="eyebrow">SUA HISTÓRIA EM SEQUÊNCIA</span>
+          <h2 id="player-heading">Assistir às cenas</h2>
+        </div>
+        <button id="player-close" class="secondary small">Fechar ×</button>
+      </div>
+      <div class="player-layout">
+        <nav id="chapters"></nav>
+        <section class="player-screen">
+          <video id="video" controls playsinline></video>
+          <div class="playback-controls">
+            <button id="previous" class="small secondary">← Anterior</button
+            ><span id="now-playing"></span
+            ><button id="next" class="small secondary">Próxima →</button>
+          </div>
+          <p class="hint">
+            As cenas avançam automaticamente. Os arquivos originais permanecem
+            separados.
+          </p>
+        </section>
+      </div>
+    </dialog>
+    <script src="renderer.js"></script>
+  </body>
+</html>
