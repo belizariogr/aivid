@@ -25,6 +25,8 @@ contextBridge.exposeInMainWorld("aivid", {
   enqueue: (id, sceneId, continuous) =>
     invoke("enqueue", id, sceneId, continuous),
   cancel: (id) => invoke("cancel", id),
+  saveClipFrame: (id, index, position, name) =>
+    invoke("save-clip-frame", id, index, position, name),
   openOutput: (id, r) => invoke("open-output", id, r),
   onJobs: (callback) => {
     const listener = (_e, jobs) => callback(jobs);

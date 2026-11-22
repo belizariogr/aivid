@@ -280,6 +280,33 @@
         </section>
       </div>
     </dialog>
+    <dialog id="clip-frame-dialog" aria-labelledby="clip-frame-title">
+      <form id="clip-frame-form">
+        <h2 id="clip-frame-title">Salvar quadro como referência</h2>
+        <label>Clipe<select id="clip-frame-clip"></select></label>
+        <label
+          >Quadro<select id="clip-frame-position">
+            <option value="end">Fim do clipe</option>
+            <option value="start">Início do clipe</option>
+          </select></label
+        >
+        <label
+          >Nome na biblioteca<input id="clip-frame-name" maxlength="100"
+        /></label>
+        <p class="hint">
+          O quadro ficará disponível em Imagem inicial e em Gerar ambiente.
+        </p>
+        <p id="clip-frame-status" role="status"></p>
+        <div class="dialog-actions">
+          <button id="clip-frame-close" type="button" class="secondary">
+            Cancelar
+          </button>
+          <button id="clip-frame-save" type="submit" class="primary">
+            Salvar referência
+          </button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="environment-dialog" aria-labelledby="environment-title">
       <div class="panel-heading">
         <h2 id="environment-title">Gerar ambiente</h2>

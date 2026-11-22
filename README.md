@@ -21,7 +21,7 @@ O Aivid não é um editor de vídeo. Ele mantém os clipes separados para você 
 - [LTX Desktop](https://github.com/Lightricks/LTX-Desktop) instalado em `/Applications/LTX Desktop.app`, aberto e inicializado.
 - Um modelo Fast e o **encoder de texto local** instalados no LTX Desktop. A integração foi validada com LTX Desktop 1.3.2 e LTX 2.3 Fast.
 - Node.js 22.12+ para desenvolver a partir do código. O `.app` empacotado não precisa de Node instalado.
-- FFmpeg (`brew install ffmpeg`) somente se ativar a continuidade entre cenas.
+- FFmpeg (`brew install ffmpeg`) para continuidade entre cenas ou para salvar quadros dos clipes.
 
 O Aivid utiliza a API local interna do LTX Desktop, que pode mudar entre versões. Ele não inclui os modelos nem baixa pesos automaticamente.
 
@@ -57,6 +57,8 @@ O empacotamento usa Node 24 via `npx`, sem trocar o Node global da máquina. O a
 **Gerar clipe contínuo** usa o quadro inicial da primeira cena e reúne as ações na ordem do projeto, com os tempos de cada cena no prompt. O LTX aceita até 20 segundos por clipe. O resultado fica em **Fila e vídeos** e é salvo como `sequencia.mp4`. A imagem inicial e as instruções de estilo ajudam a manter a aparência ao longo do clipe.
 
 Em **Gerar ambiente**, marque **Gerar só o fundo, sem personagens** para preparar um cenário reutilizável. Selecione uma imagem de referência para orientar a composição, a paleta e a iluminação. Para começar o vídeo com o elenco já em quadro, use uma imagem inicial que inclua os personagens.
+
+Em **Fila e vídeos → Salvar quadro**, escolha um clipe, o início ou o fim e um nome para a referência. O Aivid salva uma cópia na biblioteca do projeto. Selecione-a depois em **Imagem inicial** ou como referência em **Gerar ambiente**.
 
 ### Várias imagens de personagens
 

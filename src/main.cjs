@@ -109,7 +109,7 @@ async function ffmpeg() {
     return (await exec("/usr/bin/which", ["ffmpeg"])).stdout.trim();
   } catch {
     throw new Error(
-      "Instale FFmpeg (brew install ffmpeg) para encadear ou unir cenas.",
+      "Instale FFmpeg (brew install ffmpeg) para encadear cenas ou salvar quadros dos clipes.",
     );
   }
 }
@@ -589,6 +589,52 @@ app.whenReady().then(() => {
       j.cancelRequested = true;
       persist();
       if (j.ownsBackend) await engine.cancel();
+    }
+  });
+  handle("save-clip-frame", async (jobId, index, position, name) => {
+    const job = jobById(jobId);
+    const clip = Number.isInteger(index) ? job.files[index] : null;
+    if (!clip) throw new Error("Escolha um clipe já salvo.");
+    if (position !== "start" && position !== "end")
+      throw new Error("Escolha o início ou o fim do clipe.");
+
+    const binary = await ffmpeg();
+    const temp = await fsp.mkdtemp(path.join(os.tmpdir(), "aivid-frame-"));
+    try {
+      const frame = path.join(temp, "quadro.png");
+      // Write each frame near the end to the same file, leaving the final one.
+      const input = position === "end" ? ["-sseof", "-0.5"] : [];
+      const output = position === "start" ? ["-frames:v", "1"] : [];
+      await exec(binary, [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        ...input,
+        "-i",
+        clip,
+        "-map",
+        "0:v:0",
+        ...output,
+        "-update",
+        "1",
+        frame,
+      ]);
+      const project = store.project(job.projectId);
+      const scene = job.scenes[index];
+      (project.environments ??= []).push({
+        id: randomUUID(),
+        name:
+          String(name || "")
+            .trim()
+            .slice(0, 100) ||
+          `${scene?.name || "Clipe"} · ${position === "end" ? "fim" : "início"}`,
+        prompt: scene?.prompt || "",
+        image: store.asset(project.id, frame),
+      });
+      store.save();
+      return library();
+    } finally {
+      await fsp.rm(temp, { recursive: true, force: true });
     }
   });
   handle("open-output", async (id, reveal) => {

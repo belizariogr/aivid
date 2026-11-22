@@ -202,7 +202,7 @@ function renderJobs() {
                       100,
                   ),
                 );
-          return `<article class="job" data-id="${esc(j.id)}"><div class="job-top"><div><div class="job-title">${esc(j.scenes.length === 1 ? j.scenes[0].name : j.projectName)}</div><div class="job-meta">${j.scenes.length} cena${j.scenes.length === 1 ? "" : "s"} · ${esc(j.project.settings.resolution)} · ${new Date(j.createdAt).toLocaleString("pt-BR")}</div></div><span class="job-status">${labels[j.status] || esc(j.status)}</span></div>${busy ? `<progress max="100" value="${progress}"></progress>` : ""}${j.error ? `<p class="job-error">${esc(j.error)}</p>` : ""}<div class="job-bottom"><p>${j.status === "running" ? `Cena ${j.scene || 1} de ${j.scenes.length} · ${progress}%` : j.status === "queued" ? "Aguardando sua vez" : `${j.files.length} clipe(s) salvo(s)${j.elapsedSeconds ? " · " + Math.round(j.elapsedSeconds / 60) + " min" : ""}`}<br>${j.folder ? esc(j.folder) : ""}</p><div class="job-actions">${j.output ? '<button data-action="play" class="small secondary">Abrir vídeo</button>' : ""}${j.folder ? '<button data-action="folder" class="small secondary">Ver clipes ↗</button>' : ""}${busy ? '<button data-action="cancel" class="small secondary">Cancelar</button>' : ""}</div></div></article>`;
+          return `<article class="job" data-id="${esc(j.id)}"><div class="job-top"><div><div class="job-title">${esc(j.scenes.length === 1 ? j.scenes[0].name : j.projectName)}</div><div class="job-meta">${j.scenes.length} cena${j.scenes.length === 1 ? "" : "s"} · ${esc(j.project.settings.resolution)} · ${new Date(j.createdAt).toLocaleString("pt-BR")}</div></div><span class="job-status">${labels[j.status] || esc(j.status)}</span></div>${busy ? `<progress max="100" value="${progress}"></progress>` : ""}${j.error ? `<p class="job-error">${esc(j.error)}</p>` : ""}<div class="job-bottom"><p>${j.status === "running" ? `Cena ${j.scene || 1} de ${j.scenes.length} · ${progress}%` : j.status === "queued" ? "Aguardando sua vez" : `${j.files.length} clipe(s) salvo(s)${j.elapsedSeconds ? " · " + Math.round(j.elapsedSeconds / 60) + " min" : ""}`}<br>${j.folder ? esc(j.folder) : ""}</p><div class="job-actions">${j.output ? '<button data-action="play" class="small secondary">Abrir vídeo</button>' : ""}${j.files.length ? '<button data-action="frame" class="small secondary">Salvar quadro</button>' : ""}${j.folder ? '<button data-action="folder" class="small secondary">Ver clipes ↗</button>' : ""}${busy ? '<button data-action="cancel" class="small secondary">Cancelar</button>' : ""}</div></div></article>`;
         })
         .join("")
     : '<p class="hint">Seus clipes e o andamento das gerações aparecerão aqui.</p>';
@@ -349,6 +349,10 @@ $("jobs").onclick = (e) => {
   const b = e.target.closest("[data-action]");
   if (!b) return;
   const id = b.closest("[data-id]").dataset.id;
+  if (b.dataset.action === "frame") {
+    openClipFrame(id);
+    return;
+  }
   action(() =>
     b.dataset.action === "cancel"
       ? api.cancel(id)
@@ -559,3 +563,53 @@ $("environment-approve").onclick = () =>
     $("environment-dialog").close();
     toast("Ambiente aprovado e disponível para outras cenas.");
   });
+
+let clipFrameJob;
+function fillClipFrameName() {
+  const index = Number($("clip-frame-clip").value);
+  const position = $("clip-frame-position").value === "end" ? "fim" : "início";
+  const title = clipFrameJob.scenes[index]?.name || `Clipe ${index + 1}`;
+  $("clip-frame-name").value = `${title} · ${position}`.slice(0, 100);
+}
+function openClipFrame(id) {
+  clipFrameJob = data.jobs.find((job) => job.id === id);
+  $("clip-frame-clip").innerHTML = clipFrameJob.files
+    .map((_, index) =>
+      option(index, clipFrameJob.scenes[index]?.name || `Clipe ${index + 1}`),
+    )
+    .join("");
+  $("clip-frame-position").value = "end";
+  $("clip-frame-status").textContent = "";
+  fillClipFrameName();
+  $("clip-frame-dialog").showModal();
+}
+$("clip-frame-clip").onchange = fillClipFrameName;
+$("clip-frame-position").onchange = fillClipFrameName;
+$("clip-frame-close").onclick = () => $("clip-frame-dialog").close();
+$("clip-frame-dialog").addEventListener("cancel", (event) => {
+  if ($("clip-frame-save").disabled) event.preventDefault();
+});
+$("clip-frame-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const submit = $("clip-frame-save");
+  if (submit.disabled) return;
+  submit.disabled = $("clip-frame-close").disabled = true;
+  $("clip-frame-status").textContent = "Salvando referência…";
+  try {
+    await save();
+    updateData(
+      await api.saveClipFrame(
+        clipFrameJob.id,
+        Number($("clip-frame-clip").value),
+        $("clip-frame-position").value,
+        $("clip-frame-name").value,
+      ),
+    );
+    $("clip-frame-dialog").close();
+    toast("Quadro salvo na biblioteca do projeto.");
+  } catch (error) {
+    $("clip-frame-status").textContent = error.message;
+  } finally {
+    submit.disabled = $("clip-frame-close").disabled = false;
+  }
+};
