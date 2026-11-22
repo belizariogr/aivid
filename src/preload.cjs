@@ -22,7 +22,8 @@ contextBridge.exposeInMainWorld("aivid", {
     invoke("approve-environment", id, sid, name),
   connect: () => invoke("connect"),
   openLtx: () => invoke("open-ltx"),
-  enqueue: (id, r) => invoke("enqueue", id, r),
+  enqueue: (id, sceneId, continuous) =>
+    invoke("enqueue", id, sceneId, continuous),
   cancel: (id) => invoke("cancel", id),
   openOutput: (id, r) => invoke("open-output", id, r),
   onJobs: (callback) => {

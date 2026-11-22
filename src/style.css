@@ -430,6 +430,8 @@ input::placeholder {
 }
 .generate-footer {
   display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
   justify-content: space-between;
   align-items: center;
   margin-top: 22px;

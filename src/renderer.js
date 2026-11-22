@@ -12,7 +12,7 @@ let data = { projects: [], jobs: [] },
   selected = null,
   editingCharacter = null,
   toastTimer;
-const { durations, estimateDuration } = window.aividDuration;
+const { durations, estimateDuration, sequenceDuration } = window.aividDuration;
 function toast(message, error = false) {
   $("toast").textContent = message;
   $("toast").classList.toggle("error", error);
@@ -139,6 +139,7 @@ function updateCount() {
   const cards = [...document.querySelectorAll(".scene-card")];
   let estimated = false;
   let missing = false;
+  let emptyPrompt = false;
   let seconds = 0;
   for (const card of cards) {
     const selector = card.querySelector(".scene-duration");
@@ -147,6 +148,7 @@ function updateCount() {
     );
     selector.options[0].textContent =
       estimate === null ? "Automática" : `Automática (~${estimate} s)`;
+    emptyPrompt ||= estimate === null;
     const manual = Number(selector.value);
     estimated ||= !manual && estimate !== null;
     missing ||= !manual && estimate === null;
@@ -160,6 +162,15 @@ function updateCount() {
   $("scene-count").textContent =
     `${cards.length} cena${cards.length === 1 ? "" : "s"}${total}`;
   $("generate").disabled = cards.length === 0;
+  const continuous = $("generate-continuous");
+  const clipDuration = sequenceDuration(seconds);
+  continuous.disabled = !cards.length || emptyPrompt || clipDuration === null;
+  continuous.textContent =
+    seconds > 20
+      ? "Clipe contínuo · limite de 20 s"
+      : !emptyPrompt && seconds > 0
+        ? `✦ Gerar clipe contínuo · ${clipDuration} s`
+        : "✦ Gerar clipe contínuo";
 }
 function renderJobs() {
   const jobs = data.jobs
@@ -328,6 +339,12 @@ $("generate").onclick = () =>
     await api.enqueue(selected);
     toast("Cenas adicionadas à fila.");
   });
+$("generate-continuous").onclick = () =>
+  action(async () => {
+    await save();
+    await api.enqueue(selected, null, true);
+    toast("Clipe contínuo adicionado à fila.");
+  });
 $("jobs").onclick = (e) => {
   const b = e.target.closest("[data-action]");
   if (!b) return;
@@ -443,6 +460,7 @@ function openEnvironment(id) {
   const approved = p.environments?.find(
     (entry) => scene.reference === `env:${entry.id}`,
   );
+  $("environment-background-only").checked = false;
   $("environment-name").value = approved?.name || scene.name;
   $("environment-prompt").value =
     approved?.prompt || scene.environmentPrompt || scene.prompt;
@@ -450,10 +468,14 @@ function openEnvironment(id) {
     ? `env:${approved.id}`
     : scene.reference === "scene" && scene.image
       ? "scene"
-      : "";
+      : p.environmentImage
+        ? "project"
+        : "";
   $("environment-source").innerHTML =
     option("", "Nenhuma · gerar pelo texto", !source) +
-    (p.environmentImage ? option("project", "Ambiente do projeto") : "") +
+    (p.environmentImage
+      ? option("project", "Ambiente do projeto", source === "project")
+      : "") +
     (scene.image
       ? option("scene", "Quadro importado da cena", source === "scene")
       : "") +
@@ -509,6 +531,7 @@ $("environment-generate").onclick = async () => {
     const draft = await api.generateEnvironment(selected, environmentSceneId, {
       prompt,
       reference: $("environment-source").value,
+      backgroundOnly: $("environment-background-only").checked,
     });
     $("environment-draft").src = draft.preview;
     $("environment-draft").hidden = false;

@@ -29,7 +29,7 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 const mediaFiles = new Map();
-const { estimateDuration } = require("./duration.js");
+const { estimateDuration, sequenceDuration } = require("./duration.js");
 const { Store, splitScenes, buildPrompt } = require("./core.cjs");
 const { Ltx } = require("./ltx.cjs");
 const exec = promisify(execFile);
@@ -200,10 +200,10 @@ async function runQueue() {
           }
           if (result.status !== "complete" || !result.video_path)
             throw new Error("O LTX não retornou um vídeo válido.");
-          const out = path.join(
-            dir,
-            `cena-${String(scene.number).padStart(2, "0")}.mp4`,
-          );
+          const filename = job.continuous
+            ? "sequencia"
+            : `cena-${String(scene.number).padStart(2, "0")}`;
+          const out = path.join(dir, `${filename}.mp4`);
           await fsp.copyFile(
             result.video_path,
             out,
@@ -211,10 +211,7 @@ async function runQueue() {
           );
           job.files.push(out);
           await fsp.writeFile(
-            path.join(
-              dir,
-              `cena-${String(scene.number).padStart(2, "0")}.json`,
-            ),
+            path.join(dir, `${filename}.json`),
             JSON.stringify(
               { request, generatedAt: new Date().toISOString() },
               null,
@@ -429,10 +426,14 @@ app.whenReady().then(() => {
       prompt: [
         project.description &&
           `Context and visual continuity: ${project.description}`,
-        cast.length && `Cast available in this scene: ${cast.join("; ")}`,
+        !input.backgroundOnly &&
+          cast.length &&
+          `Cast available in this scene: ${cast.join("; ")}`,
         imagePath &&
-          "Use the reference image as a visual starting point and apply the changes below.",
+          "Preserve the reference art direction: rendering medium, linework, textures, palette and lighting. Apply the requested changes without redesigning the rest.",
         `Create a single opening still for this scene. ${prompt}`,
+        input.backgroundOnly &&
+          "Create an empty background plate. Omit all characters, people and animals, including any appearing in the reference. Preserve the environment layout and art direction unless the request specifies changes.",
         "No captions or logos.",
       ]
         .filter(Boolean)
@@ -500,7 +501,7 @@ app.whenReady().then(() => {
     const error = await shell.openPath("/Applications/LTX Desktop.app");
     if (error) throw new Error("Instale o LTX Desktop em Aplicativos.");
   });
-  handle("enqueue", async (id, sceneId) => {
+  handle("enqueue", async (id, sceneId, continuous = false) => {
     const p = store.project(id);
     if (!p.outputDir)
       throw new Error("Escolha a pasta de saída antes de gerar.");
@@ -510,6 +511,7 @@ app.whenReady().then(() => {
     if (!scenes.length) throw new Error("Adicione uma cena.");
     for (const s of scenes) {
       splitScenes(s.prompt);
+      if (continuous && s !== scenes[0]) continue;
       if (s.reference === "scene" && !s.image)
         throw new Error(`Escolha a imagem inicial de ${s.name}.`);
       if (s.reference === "environment" && !p.environmentImage)
@@ -524,12 +526,48 @@ app.whenReady().then(() => {
           "A referência de uma cena foi removida. Escolha outra.",
         );
     }
+    let renderScenes = scenes;
+    if (continuous) {
+      let elapsed = 0;
+      const beats = scenes.map((scene) => {
+        const start = elapsed;
+        elapsed += scene.duration ?? estimateDuration(scene.prompt);
+        return `${start}–${elapsed} seconds: ${scene.prompt.trim()}`;
+      });
+      const duration = sequenceDuration(elapsed);
+      if (duration === null)
+        throw new Error(
+          "A sequência ultrapassa 20 s. Encurte as cenas para gerar em um único clipe.",
+        );
+
+      const first = scenes[0];
+      renderScenes = [
+        {
+          ...first,
+          id: randomUUID(),
+          name: "Sequência contínua",
+          duration,
+          characterIds: [
+            ...new Set(scenes.flatMap((scene) => scene.characterIds || [])),
+          ],
+          prompt: [
+            "One continuous shot. Keep the same rendering style, linework, color palette, lighting, character designs, and set layout throughout. Use continuous motion and avoid cuts or restarts.",
+            ...beats,
+            duration > elapsed &&
+              `After ${elapsed} seconds, hold the final action naturally until the end.`,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        },
+      ];
+    }
     const job = {
       id: randomUUID(),
       projectId: id,
       projectName: p.name,
       project: structuredClone(p),
-      scenes,
+      scenes: renderScenes,
+      continuous,
       status: "queued",
       createdAt: new Date().toISOString(),
       scene: 0,

@@ -15,6 +15,8 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
   class FakeEngine {
     async generateEnvironment(request) {
       assert.match(request.prompt, /cartoon/);
+      assert.match(request.prompt, /empty background plate/);
+      assert.match(request.prompt, /Preserve the reference art direction/);
       assert.ok(request.imagePath.endsWith(".png"));
       return { status: "complete", image_paths: [environment] };
     }
@@ -156,6 +158,7 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
   await invoke("generate-environment", p.id, p.scenes[1].id, {
     prompt: "Faça em cartoon e pinte a barraca de azul.",
     reference: uploaded.id,
+    backgroundOnly: true,
   });
   assert.equal((await invoke("library")).projects[0].environments.length, 0);
   const approved = (
@@ -184,6 +187,33 @@ test("fluxo de geração salva só a cena escolhida e seus parâmetros, com índ
     requests[1].prompt,
     /Use the attached image as the opening frame/,
   );
+  await invoke("enqueue", p.id, null, true);
+  for (let n = 0; n < 100; n++) {
+    await new Promise((r) => setTimeout(r, 10));
+    jobs = (await invoke("library")).jobs;
+    if (["complete", "error"].includes(jobs[2].status)) break;
+  }
+  assert.equal(jobs[2].status, "complete", jobs[2].error);
+  assert.deepEqual(
+    jobs[2].files.map((file) => path.basename(file)),
+    ["sequencia.mp4"],
+  );
+  assert.equal(requests.length, 3);
+  assert.equal(requests[2].duration, 8);
+  assert.equal(requests[2].imagePath, frame.image);
+  assert.match(
+    requests[2].prompt,
+    /0–6 seconds: Primeira ação.*\n6–8 seconds: Segunda ação/,
+  );
+  await invoke("save-project", {
+    ...approved,
+    scenes: approved.scenes.map((scene) => ({ ...scene, duration: 20 })),
+  });
+  const tooLong = await handlers.get("enqueue")(event, p.id, null, true);
+  assert.equal(tooLong.ok, false);
+  assert.match(tooLong.error, /ultrapassa 20 s/);
+  assert.equal((await invoke("library")).jobs.length, 3);
+
   const bad = await handlers
     .get("library")({ senderFrame: { url: "https://example.com" } })
     .catch(() => null);

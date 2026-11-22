@@ -48,9 +48,15 @@ O empacotamento usa Node 24 via `npx`, sem trocar o Node global da máquina. O a
 3. Adicione cenas, escreva o prompt de cada uma e marque os personagens presentes.
 4. No cartão da cena, use **Gerar ambiente** para criar um quadro inicial pelo texto, com uma referência opcional. Ajuste o prompt e gere novas prévias até aprovar uma. O quadro aprovado entra na biblioteca do projeto e pode ser escolhido em outras cenas. Também é possível importar um quadro pronto.
 5. Escolha resolução, duração e pasta de saída.
-6. Clique em **Gerar só esta cena** ou **Gerar todas as cenas**.
+6. Use **Gerar clipe contínuo** para animar as ações em uma só geração. Para obter um arquivo por cena, use **Gerar cenas separadas** ou **Gerar só esta cena**.
 7. Use as setas ↑ e ↓ nos cartões para ordenar as cenas.
 8. Use **Ver sequência** para assistir à ordem das cenas. Clique em um capítulo para pular para ele.
+
+### Clipe contínuo e fundo
+
+**Gerar clipe contínuo** usa o quadro inicial da primeira cena e reúne as ações na ordem do projeto, com os tempos de cada cena no prompt. O LTX aceita até 20 segundos por clipe. O resultado fica em **Fila e vídeos** e é salvo como `sequencia.mp4`. A imagem inicial e as instruções de estilo ajudam a manter a aparência ao longo do clipe.
+
+Em **Gerar ambiente**, marque **Gerar só o fundo, sem personagens** para preparar um cenário reutilizável. Selecione uma imagem de referência para orientar a composição, a paleta e a iluminação. Para começar o vídeo com o elenco já em quadro, use uma imagem inicial que inclua os personagens.
 
 ### Várias imagens de personagens
 

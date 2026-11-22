@@ -117,14 +117,18 @@
                 </button>
               </div>
               <p class="hint scene-intro">
-                Um prompt, uma referência e um clipe por cena. A edição final é
-                sua.
+                Para manter o estilo, gere as ações em um único clipe com a
+                imagem inicial da primeira cena. O LTX aceita até 20 segundos
+                por clipe.
               </p>
               <div id="scenes"></div>
               <div class="generate-footer">
                 <span id="scene-count">0 cenas</span
                 ><button id="generate" class="primary">
-                  ✦ Gerar todas as cenas
+                  Gerar cenas separadas
+                </button>
+                <button id="generate-continuous" class="primary">
+                  ✦ Gerar clipe contínuo
                 </button>
               </div>
             </article>
@@ -303,6 +307,10 @@
         O modelo usa uma imagem de referência por vez. As descrições do elenco
         selecionado também entram no pedido.
       </p>
+      <label class="check"
+        ><input type="checkbox" id="environment-background-only" />
+        <span>Gerar só o fundo, sem personagens</span>
+      </label>
       <img id="environment-draft" alt="Prévia do ambiente gerado" hidden />
       <p id="environment-status" role="status"></p>
       <div class="dialog-actions">

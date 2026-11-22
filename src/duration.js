@@ -37,7 +37,11 @@
     );
   }
 
-  const api = { durations, estimateDuration };
+  function sequenceDuration(seconds) {
+    return automaticDurations.find((duration) => duration >= seconds) ?? null;
+  }
+
+  const api = { durations, estimateDuration, sequenceDuration };
   if (typeof module !== "undefined") module.exports = api;
   else window.aividDuration = api;
 })();
