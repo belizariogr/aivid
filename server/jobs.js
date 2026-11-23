@@ -128,7 +128,7 @@ export class JobQueue {
     this.changed();
     try {
       await this.ltx.ensureLocal();
-      await this.ltx.assertIdle();
+      await this.waitForLtx(job);
       if (job.kind === "video") await this.runVideo(job);
       else if (job.kind === "preview") await this.runPreview(job);
       else if (job.kind === "avatar") await this.runAvatar(job);
@@ -152,6 +152,21 @@ export class JobQueue {
       this.running = null;
       this.changed();
       setImmediate(() => this.pump());
+    }
+  }
+
+  // O LTX gera uma coisa por vez: se estiver ocupado (pelo próprio LTX ou por outro app), espera.
+  async waitForLtx(job) {
+    for (;;) {
+      if (job.cancelRequested) throw Object.assign(new Error("Operação cancelada."), { code: "ABORTED" });
+      const p = await this.ltx.progress();
+      if (p.status !== "running") return;
+      const phase = `Aguardando o LTX terminar outra geração${p.progress ? ` (${p.progress}%)` : ""}`;
+      if (job.phase !== phase) {
+        job.phase = phase;
+        this.changed();
+      }
+      await new Promise((r) => setTimeout(r, this.idlePoll ?? 3000));
     }
   }
 

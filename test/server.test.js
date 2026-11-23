@@ -6,7 +6,7 @@ import path from "node:path";
 import http from "node:http";
 import { createApp } from "../server/index.js";
 
-const fakeLtx = { status: async () => ({ connected: false, error: "off" }), ensureLocal: async () => {}, assertIdle: async () => {} };
+const fakeLtx = { status: async () => ({ connected: false, error: "off" }), ensureLocal: async () => {} };
 
 async function start() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-srv-"));

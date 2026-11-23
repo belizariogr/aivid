@@ -20,11 +20,11 @@ class FakeLtx {
     this.dir = dir;
     this.calls = [];
     this.n = 0;
+    this.busy = 0;
   }
   async ensureLocal() {}
-  async assertIdle() {}
   async progress() {
-    return { status: "running", progress: 50 };
+    return this.busy-- > 0 ? { status: "running", progress: 30 } : { status: "idle" };
   }
   async cancel() {}
   async durations() {
@@ -159,4 +159,20 @@ test("preview images are saved in the output folder", { skip: !ffmpeg && "ffmpeg
   const req = ltx.calls[0][1];
   assert.equal(req.width < req.height, true);
   assert.match(req.prompt, /Noir[\s\S]*no people[\s\S]*dark alley/);
+});
+
+test("waits while the LTX is busy with another generation", { skip: !ffmpeg && "ffmpeg ausente" }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(root);
+  ltx.busy = 2;
+  const phases = [];
+  const queue = new JobQueue({ store, ltx, onChange: (jobs) => phases.push(jobs[0]?.phase) });
+  queue.idlePoll = 10;
+  const p = store.create("X");
+  store.edit(p.id, { outputDir: path.join(root, "out"), scenes: [{ id: "s", blocks: [{ id: "a", prompt: "a", duration: 2 }] }] });
+  queue.addScene(p.id, "s");
+  await waitIdle(queue);
+  assert.equal(queue.jobs[0].status, "complete", queue.jobs[0].error);
+  assert.ok(phases.some((x) => /Aguardando o LTX/.test(x || "")));
 });

@@ -1,6 +1,7 @@
 // Cliente da API local do LTX Desktop (backend FastAPI em 127.0.0.1).
 // A porta e o token de sessão são lidos do processo `ltx2_server.py` em execução.
 import { execFile } from "node:child_process";
+import http from "node:http";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -27,10 +28,31 @@ function errorDetail(body) {
   return null;
 }
 
+// HTTP sem limite de espera pelos cabeçalhos. O fetch do Node desiste após 300 s, e uma
+// continuação em 720p leva mais que isso; o LTX só responde quando termina de gerar.
+export function httpTransport(url, { method, headers, body, signal }) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(url, { method, headers, signal }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString("utf8") }));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
+const sleep = (ms, signal) =>
+  new Promise((resolve, reject) => {
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => (clearTimeout(t), reject(new LtxError("Operação cancelada.", { code: "ABORTED" }))), { once: true });
+  });
+
 export class LtxClient {
-  constructor({ exec = run, fetchImpl = globalThis.fetch } = {}) {
+  constructor({ exec = run, transport = httpTransport } = {}) {
     this.exec = exec;
-    this.fetch = fetchImpl;
+    this.transport = transport;
     this.connection = null;
     this.specsCache = null;
   }
@@ -71,7 +93,7 @@ export class LtxClient {
     if (signal) signals.push(signal);
     let response;
     try {
-      response = await this.fetch(base + endpoint, {
+      response = await this.transport(base + endpoint, {
         method,
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -82,22 +104,22 @@ export class LtxClient {
       });
     } catch (error) {
       this.connection = null;
-      if (error?.name === "TimeoutError") throw new LtxError("O LTX demorou demais para responder.");
       if (signal?.aborted) throw new LtxError("Operação cancelada.", { code: "ABORTED" });
-      throw new LtxError("A conexão com o LTX Desktop caiu. Confira se ele continua aberto.");
+      if (error?.name === "TimeoutError" || error?.name === "AbortError") throw new LtxError("O LTX demorou demais para responder.");
+      throw new LtxError("A conexão com o LTX Desktop caiu. Confira se ele continua aberto.", { code: "CONNECTION" });
     }
     if (response.status === 401) {
       this.connection = null;
       throw new LtxError("O LTX Desktop foi reiniciado. Tente novamente.", { status: 401 });
     }
-    const text = await response.text();
+    const text = response.text;
     let data = null;
     try {
       data = text ? JSON.parse(text) : null;
     } catch {
       data = null;
     }
-    if (!response.ok) {
+    if (response.status < 200 || response.status >= 300) {
       const detail = errorDetail(data);
       throw new LtxError(detail || `O LTX recusou a operação (HTTP ${response.status}).`, { status: response.status });
     }
@@ -133,12 +155,6 @@ export class LtxClient {
     if (Object.keys(patch).length) await this.request("POST", "/api/settings", patch);
   }
 
-  async assertIdle() {
-    const progress = await this.progress();
-    if (progress.status === "running")
-      throw new LtxError("O LTX Desktop já está gerando outra coisa. Aguarde terminar ou cancele no próprio LTX.", { code: "BUSY" });
-  }
-
   // Durações que o pipeline local aceita para a resolução/fps escolhidos.
   async durations(resolution, fps) {
     try {
@@ -152,19 +168,50 @@ export class LtxClient {
     return FALLBACK_DURATIONS;
   }
 
+  // Gerações longas: se a conexão cair, acompanha o progresso do LTX e recupera o resultado.
+  async long(endpoint, body, opts, toResult) {
+    let before = null;
+    try {
+      before = (await this.progress()).id ?? null;
+    } catch {
+      /* sem progresso anterior */
+    }
+    try {
+      return await this.request("POST", endpoint, body, { timeout: 6 * 3600_000, ...opts });
+    } catch (error) {
+      if (error.code !== "CONNECTION") throw error;
+      const deadline = Date.now() + 6 * 3600_000;
+      while (Date.now() < deadline) {
+        await sleep(3000, opts.signal);
+        let p;
+        try {
+          p = await this.progress();
+        } catch {
+          throw error;
+        }
+        if (p.id === before) throw error; // a nossa geração nem começou
+        if (p.status === "running") continue;
+        if (p.status === "complete" && p.result) return toResult(p.result);
+        if (p.status === "cancelled") return { status: "cancelled" };
+        throw new LtxError(p.status === "error" ? `O LTX falhou: ${p.phase || "erro desconhecido"}` : error.message);
+      }
+      throw error;
+    }
+  }
+
   generateVideo(body, opts = {}) {
-    return this.request("POST", "/api/generate", body, { timeout: 6 * 3600_000, ...opts });
+    return this.long("/api/generate", body, opts, (r) => ({ status: "complete", video_path: Array.isArray(r) ? r[0] : r }));
   }
 
   extend(body, opts = {}) {
-    return this.request("POST", "/api/extend", body, { timeout: 6 * 3600_000, ...opts });
+    return this.long("/api/extend", body, opts, (r) => ({ status: "complete", video_path: Array.isArray(r) ? r[0] : r }));
   }
 
   async generateImage(body, opts = {}) {
     const status = await this.request("GET", "/api/image-generation/status");
     if (status.localBlocker || status.defaultProvider !== "local")
       throw new LtxError("A geração local de imagens não está disponível. Instale o Z-Image Turbo no LTX Desktop.");
-    return this.request("POST", "/api/generate-image", body, { timeout: 30 * 60_000, ...opts });
+    return this.long("/api/generate-image", body, opts, (r) => ({ status: "complete", image_paths: Array.isArray(r) ? r : [r] }));
   }
 
   progress() {
