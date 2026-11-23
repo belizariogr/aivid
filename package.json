@@ -1,0 +1,19 @@
+{
+  "name": "takes",
+  "version": "0.1.0",
+  "description": "Estúdio local para gerar cenas longas e contínuas com o LTX Desktop.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "bin": {
+    "takes": "server/index.js"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js --no-open",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=20.10"
+  }
+}
