@@ -586,7 +586,8 @@ function jobLine(j) {
   return `<div class="progress"><div style="width:${pct}%"></div></div><small>${esc(j.phase || "")}${eta}</small>`;
 }
 
-const JOB_STATUS = { queued: "Na fila", running: "Gerando", complete: "Concluída", error: "Erro", cancelled: "Cancelada" };
+const JOB_STATUS = { queued: "Na fila", running: "Gerando", complete: "Concluída", error: "Erro", cancelled: "Cancelada", interrupted: "Interrompida" };
+const RESUMABLE = ["interrupted", "error", "cancelled"];
 
 function queue() {
   const name = (id) => state.projects.find((p) => p.id === id)?.name ?? "";
@@ -600,6 +601,7 @@ function queue() {
         ${j.kind === "avatar" && j.result?.draft ? `<small>Foto pronta — abra o personagem para usar.</small>` : ""}
         <div class="row">
           ${["queued", "running"].includes(j.status) ? `<button class="btn small danger" data-action="cancel-job" data-id="${j.id}">Cancelar</button>` : `<button class="btn small ghost" data-action="remove-job" data-id="${j.id}">Remover</button>`}
+          ${RESUMABLE.includes(j.status) && j.kind === "video" ? `<button class="btn small primary" data-action="resume-job" data-id="${j.id}" title="Gera os blocos que faltaram">Retomar</button>` : ""}
           ${j.steps?.length ? `<small class="muted">${j.steps.length} bloco(s) salvo(s)</small>` : ""}
         </div>
       </div>`,
@@ -968,6 +970,10 @@ const actions = {
   async "cancel-job"({ id }) {
     await api("POST", `/api/jobs/${id}/cancel`);
   },
+  async "resume-job"({ id }) {
+    await api("POST", `/api/jobs/${id}/resume`);
+    toast("Tarefa retomada.");
+  },
   async "remove-job"({ id }) {
     await api("DELETE", `/api/jobs/${id}`);
   },
@@ -1181,12 +1187,20 @@ function connectEvents() {
   const es = new EventSource("/api/events");
   let previous = new Map();
   let structure = "";
+  let first = true;
   es.addEventListener("jobs", (e) => {
     state.jobs = JSON.parse(e.data);
+    if (first) {
+      first = false;
+      const recovered = state.jobs.filter((j) => j.status === "running" && j.inflight);
+      const interrupted = state.jobs.filter((j) => j.status === "interrupted");
+      if (recovered.length) toast("O LTX continuou gerando enquanto o Takes estava fechado. Acompanhando o progresso.");
+      if (interrupted.length) toast(`${interrupted.length} tarefa(s) interrompida(s). Veja a aba Fila para retomar.`, "error");
+    }
     const finished = state.jobs.some((j) => previous.get(j.id) && previous.get(j.id) !== j.status && j.status !== "running");
     for (const j of state.jobs) {
       const was = previous.get(j.id);
-      if (was && was !== j.status && j.status === "error") toast(`${j.title}: ${j.error}`, "error");
+      if (was && was !== j.status && (j.status === "error" || j.status === "interrupted")) toast(`${j.title}: ${j.error}`, "error");
       if (was && was !== j.status && j.status === "complete") toast(`${j.title}: concluída.`);
     }
     previous = new Map(state.jobs.map((j) => [j.id, j.status]));

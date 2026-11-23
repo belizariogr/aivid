@@ -176,3 +176,85 @@ test("waits while the LTX is busy with another generation", { skip: !ffmpeg && "
   assert.equal(queue.jobs[0].status, "complete", queue.jobs[0].error);
   assert.ok(phases.some((x) => /Aguardando o LTX/.test(x || "")));
 });
+
+// LTX cujo estado de progresso é compartilhado entre "aberturas" do Takes.
+class ControlledLtx extends FakeLtx {
+  constructor(dir, state) {
+    super(dir);
+    this.state = state;
+  }
+  async progress() {
+    return { ...this.state };
+  }
+  async generateVideo(req) {
+    if (!this.state.hang) return super.generateVideo(req);
+    this.calls.push(["generate", req]);
+    Object.assign(this.state, { id: "g1", status: "running", progress: 40, result: null });
+    return new Promise((_, reject) => (this.state.abandon = reject));
+  }
+}
+
+async function closeMidGeneration(root) {
+  const store = new Store(path.join(root, "lib"));
+  const state = { id: "old", status: "complete", result: "/tmp/antigo.mp4", hang: true };
+  const ltx = new ControlledLtx(fs.mkdtempSync(path.join(root, "ltx-")), state);
+  const file = path.join(root, "lib", "jobs.json");
+  const queue = new JobQueue({ store, ltx, file });
+  queue.pollMs = 10;
+  const p = store.create("Rec");
+  store.edit(p.id, {
+    outputDir: path.join(root, "out"),
+    settings: { fps: 24 },
+    scenes: [{ id: "s", title: "Cena", blocks: [{ id: "a", prompt: "a", duration: 3 }, { id: "b", prompt: "b", duration: 2, continuity: "continue" }] }],
+  });
+  queue.addScene(p.id, "s");
+  while (!queue.jobs[0]?.ltxGenerationId) await new Promise((r) => setTimeout(r, 10));
+  await queue.stop({ cancel: false }); // o Takes fecha; o LTX continua gerando
+  state.abandon(new Error("conexão encerrada"));
+  delete state.hang;
+  return { store: new Store(path.join(root, "lib")), state, file, ltxDir: ltx.dir, projectId: p.id };
+}
+
+test("reopening recovers a generation the LTX kept running and finishes the queue", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-rec-"));
+  const { store, state, file, ltxDir, projectId } = await closeMidGeneration(root);
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(saved[0].status, "running");
+  assert.equal(saved[0].inflight.blockId, "a");
+
+  const phases = [];
+  const ltx = new ControlledLtx(ltxDir, state);
+  const queue = new JobQueue({ store, ltx, file, onChange: (jobs) => phases.push(jobs[0].phase) });
+  queue.pollMs = 10;
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(queue.jobs[0].status, "running");
+  assert.match(phases.at(-1), /recuperado/);
+  // O LTX termina a geração enquanto o Takes reaberto acompanha.
+  const video = path.join(ltxDir, "terminado.mp4");
+  makeVideo(video, 73, 24, "blue");
+  Object.assign(state, { status: "complete", progress: 100, result: video });
+  await waitIdle(queue);
+  assert.equal(queue.jobs[0].status, "complete", queue.jobs[0].error);
+  const scene = store.get(projectId).scenes[0];
+  assert.deepEqual(scene.blocks.map((_, i) => blockState(scene, i)), ["ready", "ready"]);
+  assert.equal((await media.probe(selectedTake(scene.blocks[0]).file)).frames, 72);
+  assert.equal(ltx.calls.filter(([k]) => k === "generate").length, 0, "não gera o bloco 1 de novo");
+  assert.equal(ltx.calls.filter(([k]) => k === "extend").length, 1);
+});
+
+test("a generation lost while closed becomes interrupted and can be resumed", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-rec-"));
+  const { store, state, file, ltxDir, projectId } = await closeMidGeneration(root);
+  Object.assign(state, { id: "outra", status: "complete", result: "/tmp/outra.mp4" }); // o LTX fez outra coisa
+  const ltx = new ControlledLtx(ltxDir, state);
+  const queue = new JobQueue({ store, ltx, file });
+  queue.pollMs = 10;
+  await waitIdle(queue);
+  assert.equal(queue.jobs[0].status, "interrupted");
+  assert.match(queue.jobs[0].error, /Retomar/);
+  queue.resume(queue.jobs[0].id);
+  await waitIdle(queue);
+  assert.equal(queue.jobs[0].status, "complete", queue.jobs[0].error);
+  const scene = store.get(projectId).scenes[0];
+  assert.deepEqual(scene.blocks.map((_, i) => blockState(scene, i)), ["ready", "ready"]);
+});

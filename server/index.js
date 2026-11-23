@@ -27,8 +27,10 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media } = {}
     store,
     ltx,
     mediaLib,
+    file: path.join(root, "jobs.json"),
     onChange: (jobs) => broadcast("jobs", jobs),
   });
+  let onShutdown = () => {};
   const originalSave = store.save.bind(store);
   store.save = (project) => {
     const saved = originalSave(project);
@@ -194,6 +196,12 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media } = {}
   route("POST", "/api/jobs/:jid/cancel", async ({ jid }) => (await queue.cancel(jid), { ok: true }));
   route("DELETE", "/api/jobs/:jid", ({ jid }) => (queue.remove(jid), { ok: true }));
   route("POST", "/api/jobs/clear", () => (queue.clearFinished(), { ok: true }));
+  route("POST", "/api/jobs/:jid/resume", ({ jid }) => queue.resume(jid));
+  // Usado pelo app do Mac ao sair: `cancel` decide se o LTX termina a geração atual ou não.
+  route("POST", "/api/shutdown", ({ body }) => {
+    setImmediate(() => onShutdown({ cancel: Boolean(body.cancel) }));
+    return { ok: true };
+  });
   route("POST", "/api/projects/:id/characters/:cid/avatar/apply", async ({ id, cid, body }) => {
     const draft = allowedFile(String(body.draft || ""));
     if (!draft || !fs.existsSync(draft)) throw Object.assign(new Error("Imagem gerada não encontrada."), { status: 404 });
@@ -332,7 +340,7 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media } = {}
     fs.createReadStream(file).pipe(res);
   }
 
-  return { store, queue, handler, server: http.createServer(handler) };
+  return { store, queue, handler, server: http.createServer(handler), setShutdown: (fn) => (onShutdown = fn) };
 }
 
 function json(res, status, data) {
@@ -343,7 +351,7 @@ function json(res, status, data) {
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const root = process.env.TAKES_HOME || path.join(os.homedir(), "Library", "Application Support", "Takes");
   const port = process.env.PORT === undefined ? 4477 : Number(process.env.PORT);
-  const { server, queue } = createApp({ root });
+  const { server, queue, setShutdown } = createApp({ root });
   server.listen(port, "127.0.0.1", () => {
     const address = `http://127.0.0.1:${server.address().port}`;
     console.log(`Takes rodando em ${address}`);
@@ -358,21 +366,21 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
     throw e;
   });
 
-  // Ao encerrar, cancela o que estiver gerando no LTX para não deixar trabalho órfão.
+  // Ctrl+C no terminal cancela o que está gerando. SIGTERM, o fechamento do app do Mac
+  // (ou uma queda dele) deixam o LTX terminar: a geração é recuperada na próxima abertura.
   let stopping = false;
-  const shutdown = async () => {
+  const shutdown = async ({ cancel }) => {
     if (stopping) return;
     stopping = true;
-    const active = queue.jobs.filter((j) => ["queued", "running"].includes(j.status));
-    await Promise.race([Promise.all(active.map((j) => queue.cancel(j.id).catch(() => {}))), new Promise((r) => setTimeout(r, 4000))]);
+    await queue.stop({ cancel }).catch(() => {});
     process.exit(0);
   };
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
-  // No app do Mac, o servidor encerra junto quando o app fecha (inclusive se travar).
+  setShutdown(shutdown);
+  process.on("SIGINT", () => shutdown({ cancel: true }));
+  process.on("SIGTERM", () => shutdown({ cancel: false }));
   if (process.env.TAKES_EXIT_WITH_PARENT === "1") {
-    process.stdin.on("end", shutdown);
-    process.stdin.on("close", shutdown);
+    process.stdin.on("end", () => shutdown({ cancel: false }));
+    process.stdin.on("close", () => shutdown({ cancel: false }));
     process.stdin.resume();
   }
 }

@@ -168,7 +168,7 @@ label.inline input { width: 70px; }
 .range { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12.5px; }
 .status { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
 .status.ready, .status.complete { color: var(--ok); border-color: #2c4a35; }
-.status.stale, .status.missing, .status.running, .status.queued { color: var(--warn); border-color: #5a4422; }
+.status.stale, .status.missing, .status.running, .status.queued, .status.interrupted { color: var(--warn); border-color: #5a4422; }
 .status.error { color: var(--bad); border-color: #5a2d27; }
 .block-body { display: grid; grid-template-columns: 1fr 300px; gap: 14px; }
 .block-fields { min-width: 0; }
@@ -181,7 +181,7 @@ label.inline input { width: 70px; }
 .progress { height: 6px; background: var(--panel-2); border-radius: 999px; overflow: hidden; margin: 6px 0 4px; }
 .progress > div { height: 100%; background: var(--accent); transition: width .4s; }
 .job { margin-bottom: 10px; }
-.job.error { border-color: #5a2d27; }
+.job.error, .job.interrupted { border-color: #5a2d27; }
 
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: grid; place-items: center; z-index: 50; padding: 20px; }
 .overlay.top { z-index: 60; }

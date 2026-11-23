@@ -28,7 +28,16 @@ npm run app           # gera dist/Takes.app
 npm run app:install   # gera e instala em ~/Applications/Takes.app
 ```
 
-O app é uma janela nativa (Swift + WebKit) que inicia o servidor do Takes sozinho, numa porta livre a partir de 4477, e o encerra ao sair. Se houver gerações em andamento, ele pergunta antes de fechar e cancela essas gerações no LTX. Se o app for encerrado à força, o servidor também termina. Diálogos, seleção de arquivos, downloads e área de transferência são nativos.
+O app é uma janela nativa (Swift + WebKit) que inicia o servidor do Takes sozinho, numa porta livre a partir de 4477, e o encerra ao sair. Diálogos, seleção de arquivos, downloads e área de transferência são nativos.
+
+### Fechar no meio de uma geração
+
+A fila fica salva em `~/Library/Application Support/Takes/jobs.json`, com o que está sendo gerado (bloco, id da geração no LTX e como salvar o resultado). Ao sair com tarefas em andamento, o app pergunta:
+
+- **Sair e deixar o LTX terminar**: o LTX conclui a geração atual. Ao abrir o Takes de novo, ele reconhece essa geração, mostra o progresso, salva o bloco e continua a fila.
+- **Sair e cancelar**: cancela no LTX o que está gerando e na fila.
+
+Se o app fechar sozinho ou for encerrado à força, vale a primeira opção. Se a geração se perder enquanto o Takes está fechado (o LTX foi fechado ou começou outra coisa), a tarefa aparece como **Interrompida**, e **Retomar** gera o que faltou. No terminal, `Ctrl+C` cancela as gerações; `SIGTERM` deixa o LTX terminar.
 
 - Precisa do Node.js instalado (Homebrew, `/usr/local` ou o `PATH` do shell de login). O app não embute o Node.
 - O registro do servidor fica em `~/Library/Logs/Takes/servidor.log` (menu Takes → Mostrar registro do servidor).

@@ -32,18 +32,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard ready, let server, server.isRunning, !quitting else { return .terminateNow }
         activeJobs { count in
+            var cancel = false
             if count > 0 {
                 let alert = NSAlert()
-                alert.messageText = count == 1 ? "Há uma geração em andamento." : "Há \(count) gerações em andamento ou na fila."
-                alert.informativeText = "Sair do Takes cancela essas gerações no LTX Desktop. Os blocos já salvos continuam na pasta de saída."
+                alert.messageText = count == 1 ? "Há uma geração em andamento." : "Há \(count) tarefas em andamento ou na fila."
+                alert.informativeText = "Você pode deixar o LTX Desktop terminar a geração atual: ao abrir o Takes de novo, ele mostra o progresso, salva o bloco e continua a fila. Ou cancelar tudo agora."
+                alert.addButton(withTitle: "Sair e deixar o LTX terminar")
                 alert.addButton(withTitle: "Sair e cancelar")
-                alert.addButton(withTitle: "Continuar gerando")
-                if alert.runModal() != .alertFirstButtonReturn {
+                alert.addButton(withTitle: "Voltar")
+                switch alert.runModal() {
+                case .alertFirstButtonReturn: cancel = false
+                case .alertSecondButtonReturn: cancel = true
+                default:
                     sender.reply(toApplicationShouldTerminate: false)
                     return
                 }
             }
-            self.stopServer { sender.reply(toApplicationShouldTerminate: true) }
+            self.stopServer(cancel: cancel) { sender.reply(toApplicationShouldTerminate: true) }
         }
         return .terminateLater
     }
@@ -76,6 +81,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return false }
         defer { close(fd) }
+        // Igual ao Node: aceita a porta com conexões antigas em TIME_WAIT (logo após uma queda).
+        var yes: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = in_port_t(UInt16(port).bigEndian)
@@ -144,16 +152,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         webView.load(URLRequest(url: URL(string: "http://127.0.0.1:\(port)/")!))
     }
 
-    func stopServer(_ done: @escaping () -> Void) {
+    // Pede ao servidor para sair (cancelando ou não as gerações) e espera ele terminar.
+    func stopServer(cancel: Bool = false, _ done: @escaping () -> Void) {
         quitting = true
         guard let server, server.isRunning else { return done() }
-        server.terminate() // o servidor cancela as gerações do LTX ao receber SIGTERM
-        DispatchQueue.global().async {
-            let deadline = Date().addingTimeInterval(6)
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/api/shutdown")!)
+        request.httpMethod = "POST"
+        request.setValue("1", forHTTPHeaderField: "X-Takes")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["cancel": cancel])
+        request.timeoutInterval = 2
+        URLSession.shared.dataTask(with: request) { _, response, _ in
+            if response == nil { server.terminate() } // sem resposta: SIGTERM também deixa o LTX terminar
+            let deadline = Date().addingTimeInterval(8)
             while server.isRunning && Date() < deadline { usleep(50_000) }
             if server.isRunning { kill(server.processIdentifier, SIGKILL) }
             DispatchQueue.main.async(execute: done)
-        }
+        }.resume()
     }
 
     func activeJobs(_ completion: @escaping (Int) -> Void) {
