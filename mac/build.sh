@@ -1,0 +1,44 @@
+#!/bin/sh
+# Gera dist/Takes.app. Uso: sh mac/build.sh [--install]
+#   --install copia o app para ~/Applications (aparece no Spotlight e no Launchpad).
+set -eu
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+VERSION=$(node -p "require('$ROOT/package.json').version")
+APP="$ROOT/dist/Takes.app"
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+
+echo "→ Compilando o app nativo"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/app"
+swiftc -O -swift-version 5 -target arm64-apple-macos14 \
+  -framework Cocoa -framework WebKit \
+  "$ROOT/mac/Takes.swift" -o "$APP/Contents/MacOS/Takes"
+
+echo "→ Copiando servidor e interface"
+cp -R "$ROOT/server" "$ROOT/public" "$ROOT/package.json" "$APP/Contents/Resources/app/"
+sed "s/__VERSION__/$VERSION/g" "$ROOT/mac/Info.plist" > "$APP/Contents/Info.plist"
+
+echo "→ Gerando o ícone"
+swiftc -O "$ROOT/mac/icon.swift" -o "$WORK/icon" -framework AppKit
+"$WORK/icon" "$WORK/icon.png"
+ICONSET="$WORK/AppIcon.iconset"
+mkdir -p "$ICONSET"
+for s in 16 32 128 256 512; do
+  sips -z $s $s "$WORK/icon.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+  d=$((s * 2))
+  sips -z $d $d "$WORK/icon.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+
+echo "→ Assinando (ad-hoc, uso local)"
+codesign --force --deep --sign - "$APP" >/dev/null
+
+if [ "${1:-}" = "--install" ]; then
+  mkdir -p "$HOME/Applications"
+  rm -rf "$HOME/Applications/Takes.app"
+  cp -R "$APP" "$HOME/Applications/Takes.app"
+  echo "✓ Instalado em $HOME/Applications/Takes.app"
+else
+  echo "✓ $APP"
+fi

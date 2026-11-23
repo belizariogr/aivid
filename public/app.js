@@ -20,6 +20,17 @@ async function api(method, url, body) {
   return data;
 }
 
+// No app do Mac, a área de transferência passa pela janela nativa quando o WebKit recusa.
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (error) {
+    const native = window.webkit?.messageHandlers?.takes;
+    if (!native) throw error;
+    native.postMessage({ type: "copy", text });
+  }
+}
+
 function toast(message, kind = "info") {
   const el = document.createElement("div");
   el.className = `toast ${kind}`;
@@ -1008,7 +1019,7 @@ const actions = {
     refreshLlmText();
   },
   async "copy-llm"() {
-    await navigator.clipboard.writeText(state.llm.text);
+    await copyText(state.llm.text);
     toast("Instruções copiadas. Cole na LLM junto com o arquivo.");
   },
   async "llm-open-file"() {

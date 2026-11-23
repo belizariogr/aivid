@@ -342,10 +342,10 @@ function json(res, status, data) {
 
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const root = process.env.TAKES_HOME || path.join(os.homedir(), "Library", "Application Support", "Takes");
-  const port = Number(process.env.PORT) || 4477;
-  const { server } = createApp({ root });
+  const port = process.env.PORT === undefined ? 4477 : Number(process.env.PORT);
+  const { server, queue } = createApp({ root });
   server.listen(port, "127.0.0.1", () => {
-    const address = `http://127.0.0.1:${port}`;
+    const address = `http://127.0.0.1:${server.address().port}`;
     console.log(`Takes rodando em ${address}`);
     console.log(`Projetos em ${root}`);
     if (!process.argv.includes("--no-open")) execFile("/usr/bin/open", [address]);
@@ -357,4 +357,22 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
     }
     throw e;
   });
+
+  // Ao encerrar, cancela o que estiver gerando no LTX para não deixar trabalho órfão.
+  let stopping = false;
+  const shutdown = async () => {
+    if (stopping) return;
+    stopping = true;
+    const active = queue.jobs.filter((j) => ["queued", "running"].includes(j.status));
+    await Promise.race([Promise.all(active.map((j) => queue.cancel(j.id).catch(() => {}))), new Promise((r) => setTimeout(r, 4000))]);
+    process.exit(0);
+  };
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
+  // No app do Mac, o servidor encerra junto quando o app fecha (inclusive se travar).
+  if (process.env.TAKES_EXIT_WITH_PARENT === "1") {
+    process.stdin.on("end", shutdown);
+    process.stdin.on("close", shutdown);
+    process.stdin.resume();
+  }
 }

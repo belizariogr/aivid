@@ -21,6 +21,21 @@ npm test
 
 Variáveis opcionais: `PORT` (padrão 4477) e `TAKES_HOME` (pasta da biblioteca; padrão `~/Library/Application Support/Takes`).
 
+### App do Mac
+
+```sh
+npm run app           # gera dist/Takes.app
+npm run app:install   # gera e instala em ~/Applications/Takes.app
+```
+
+O app é uma janela nativa (Swift + WebKit) que inicia o servidor do Takes sozinho, numa porta livre a partir de 4477, e o encerra ao sair. Se houver gerações em andamento, ele pergunta antes de fechar e cancela essas gerações no LTX. Se o app for encerrado à força, o servidor também termina. Diálogos, seleção de arquivos, downloads e área de transferência são nativos.
+
+- Precisa do Node.js instalado (Homebrew, `/usr/local` ou o `PATH` do shell de login). O app não embute o Node.
+- O registro do servidor fica em `~/Library/Logs/Takes/servidor.log` (menu Takes → Mostrar registro do servidor).
+- O build exige as ferramentas de linha de comando do Xcode. A assinatura é ad-hoc, para uso local.
+- Depois de mudar o código, rode `npm run app:install` de novo: o app leva uma cópia do servidor e da interface.
+- Não rode `npm start` com o app aberto: os dois usariam a mesma biblioteca de projetos.
+
 ## Como funciona
 
 ### Projeto
@@ -116,6 +131,7 @@ server/store.js    projetos em JSON
 server/prompts.js  montagem dos prompts
 server/llm.js      arquivo para LLM e importação do roteiro
 public/            interface (JS puro, sem build)
+mac/               app nativo (Swift), ícone e build
 ```
 
 ## Licença

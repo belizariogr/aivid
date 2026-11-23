@@ -11,7 +11,9 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js --no-open",
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "app": "sh mac/build.sh",
+    "app:install": "sh mac/build.sh --install"
   },
   "engines": {
     "node": ">=20.10"
