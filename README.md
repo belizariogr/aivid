@@ -1,118 +1,148 @@
-# Aivid
+# Takes
 
-Um app de macOS para organizar personagens e gerar **clipes por cena** com o LTX Desktop no próprio computador.
+Estúdio local para criar **cenas longas e contínuas** com o [LTX Desktop](https://github.com/Lightricks/LTX-Desktop) instalado no Mac.
 
-## O que faz
-
-- Salva projetos com cenário, continuidade, configurações e biblioteca de personagens.
-- Cada cena tem título, prompt, personagens, duração e imagem inicial próprios.
-- Gera uma cena ou coloca todas na fila, uma por vez.
-- Salva MP4s separados e os prompts usados na pasta escolhida.
-- Permite assistir à sequência em um player com capítulos à esquerda, avanço automático e busca no vídeo.
-- Usa a versão mais recente gerada de cada cena no player.
-- Opcionalmente usa o último quadro de um clipe como referência da próxima cena.
-- Impede o repouso enquanto a fila roda; mantém a tela livre para apagar.
-
-O Aivid não é um editor de vídeo. Ele mantém os clipes separados para você editar no seu programa preferido. Os vídeos desta versão são gerados **sem áudio**.
+O LTX gera no máximo 20 segundos por clipe. O Takes divide cada cena em **blocos** de até 20 s e os encadeia para a cena não ter limite de duração. Cada bloco vira um MP4 separado na pasta de saída, pronto para edição.
 
 ## Requisitos
 
-- macOS em Apple Silicon.
-- [LTX Desktop](https://github.com/Lightricks/LTX-Desktop) instalado em `/Applications/LTX Desktop.app`, aberto e inicializado.
-- Um modelo Fast e o **encoder de texto local** instalados no LTX Desktop. A integração foi validada com LTX Desktop 1.3.2 e LTX 2.3 Fast.
-- Node.js 22.12+ para desenvolver a partir do código. O `.app` empacotado não precisa de Node instalado.
-- FFmpeg (`brew install ffmpeg`) para recortar vídeos, encadear cenas ou salvar quadros dos clipes.
-
-O Aivid utiliza a API local interna do LTX Desktop, que pode mudar entre versões. Ele não inclui os modelos nem baixa pesos automaticamente.
+- macOS com o **LTX Desktop** aberto e inicializado, com um modelo local instalado (testado com LTX 2.5 distilled).
+- Para prévias e fotos geradas por IA: **Z-Image Turbo** instalado no LTX Desktop.
+- **FFmpeg** (`brew install ffmpeg`) para recortar, extrair quadros e unir blocos.
+- **Node.js 20.10+**. O projeto não tem dependências npm.
 
 ## Executar
 
 ```sh
-npm ci
-npm start
-```
-
-Para gerar um aplicativo independente para Mac com Apple Silicon:
-
-```sh
-npm run package
-open dist/Aivid-darwin-arm64/Aivid.app
-```
-
-O empacotamento usa Node 24 via `npx`, sem trocar o Node global da máquina. O app local não é assinado nem notarizado para distribuição pública.
-
-## Fluxo recomendado
-
-1. Crie um projeto. Use **Pré-prompt do projeto** para definir estilo, câmera, iluminação e outras instruções recorrentes. O Aivid inclui esse texto nas prévias, nos ambientes e nos vídeos. Nos cartões das cenas, escreva apenas o que muda ou acontece.
-2. Adicione uma imagem de cada personagem. Clique nela para ver a foto inteira, trocar a imagem, editar os dados ou salvar uma cópia no disco. Use **Abrir pasta de arquivos** para acessar as imagens armazenadas no projeto.
-3. Adicione cenas, escreva o prompt de cada uma e marque os personagens presentes.
-4. No cartão da cena, use **Gerar ambiente** para criar um quadro inicial pelo texto, com uma referência opcional. Ajuste o prompt e gere novas prévias até aprovar uma. O quadro aprovado entra na biblioteca do projeto e pode ser escolhido em outras cenas. Também é possível importar um quadro pronto.
-5. Escolha resolução, duração e pasta de saída.
-6. Use **Gerar clipe contínuo** para animar as ações em uma só geração. Para obter um arquivo por cena, use **Gerar cenas separadas** ou **Gerar só esta cena**.
-7. Use as setas ↑ e ↓ nos cartões para ordenar as cenas.
-8. Use **Ver sequência** para assistir à ordem das cenas. Clique em um capítulo para pular para ele.
-
-**Gerar prévia da cena** cria uma imagem estática a partir do prompt da cena, das descrições do elenco selecionado e da referência visual escolhida. Revise a prévia antes de renderizar. Se aprovar, ela será salva como imagem inicial da cena e ficará disponível na biblioteca.
-
-### Clipe contínuo e fundo
-
-**Gerar clipe contínuo** usa o quadro inicial da primeira cena e reúne as ações na ordem do projeto, com os tempos de cada cena no prompt. O LTX aceita até 20 segundos por clipe. O resultado fica em **Fila e vídeos** e é salvo como `sequencia.mp4`. A imagem inicial e as instruções de estilo ajudam a manter a aparência ao longo do clipe.
-
-Em **Gerar ambiente**, marque **Gerar só o fundo, sem personagens** para preparar um cenário reutilizável. Selecione uma imagem de referência para orientar a composição, a paleta e a iluminação. Para começar o vídeo com o elenco já em quadro, use uma imagem inicial que inclua os personagens.
-
-Em **Fila e vídeos → Salvar quadro**, escolha um clipe, o início ou o fim e um nome para a referência. O Aivid salva uma cópia na biblioteca do projeto. Selecione-a depois em **Imagem inicial** ou como referência em **Gerar ambiente**.
-
-### Várias imagens de personagens
-
-A biblioteca guarda todos os personagens individualmente. Na geração comum do LTX, porém, há **uma imagem inicial por cena**. Selecionar personagens inclui suas descrições no prompt; isso não faz o modelo consumir todas as imagens como referências visuais simultâneas.
-
-Para uma cena com dois personagens, prefira uma imagem inicial já composta com os dois. É possível escolher só a imagem de um personagem como referência, mas ela pode não conter o cenário nem os outros personagens. O Z-Image Turbo do LTX gera ou transforma um quadro por vez. Envie uma composição visual quando quiser representar vários personagens pelas imagens em vez das descrições.
-
-### Duração e continuidade
-
-A duração manual aceita qualquer número inteiro de 2 a 20 segundos. Quando o LTX exige uma duração maior, o Aivid gera o próximo tempo compatível e recorta o arquivo ao tempo escolhido. Por exemplo, para 15 segundos, o LTX gera 20 e o Aivid salva um clipe de 15 segundos.
-
-Cenas novas usam **Duração automática**. O Aivid estima o tempo a partir das ações e pausas descritas no prompt e mostra a estimativa enquanto você escreve. O valor usa os tempos disponíveis no LTX e tem limite de 20 segundos por clipe. Se precisar de um tempo específico, escolha os segundos no cartão da cena. Cenas já salvas com duração fixa mantêm esse valor até você escolher **Automática**.
-
-No painel do projeto, adicione uma **imagem do ambiente**. Cenas com **Padrão do projeto** usam essa imagem quando geradas isoladamente. Em uma sequência com continuidade ativada, você pode escolher **Ambiente do projeto** em uma cena para voltar à imagem da locação. Use uma imagem própria para mudar de locação, enquadramento ou posição dos personagens.
-
-A opção de continuidade está desligada por padrão. Quando ligada, usa o último quadro da cena anterior apenas se a próxima não tiver uma referência explícita. Ela não é necessária para clipes independentes e não garante identidade perfeita. Referências próprias por cena dão mais controle e evitam acumular alterações visuais.
-
-### Saída
-
-Cada execução cria uma subpasta exclusiva dentro da pasta escolhida:
-
-```text
-aivid-<data>-<id>/
-  cena-01.mp4
-  cena-01.json
-  cena-02.mp4
-  cena-02.json
-```
-
-Os JSONs registram o prompt e os parâmetros daquela geração. Gerar novamente preserva as versões anteriores. Cenas excluídas deixam de aparecer na sequência, mas os vídeos já exportados continuam na pasta de saída.
-
-## Dados e privacidade
-
-Projetos e cópias das imagens ficam em `~/Library/Application Support/Aivid/library/`. Os vídeos ficam na pasta de saída selecionada. Esses arquivos não fazem parte do repositório.
-
-O Aivid se conecta somente ao backend do LTX em `127.0.0.1`. Descobre a porta nos logs do LTX e usa, em memória, a credencial de sessão do processo local. Não salva essa credencial em projetos, logs nem arquivos exportados. Não usa chave de API da nuvem. Antes de gerar, seleciona encoder local e desativa geração e aprimoramento de prompt por API no LTX; essas preferências ficam salvas no LTX.
-
-Use um Aivid por vez e evite iniciar gerações simultaneamente pela interface do LTX. O LTX não oferece um bloqueio de fila exclusivo para aplicativos externos.
-
-**Abortar** interrompe a geração em andamento. Depois, use **Excluir geração** para mover os clipes correspondentes para o Lixo. Ao fechar o Aivid normalmente, o app cancela suas gerações e aguarda o processo encerrar. Se o Aivid ou o LTX for encerrado à força, a geração pode ser interrompida. Na próxima abertura, trabalhos incompletos ficam marcados como interrompidos, sem reiniciar automaticamente. Deixe o Mac na tomada, com a tampa aberta e ventilação livre para trabalho noturno.
-
-## Desenvolvimento e validação
-
-```sh
-npm run check
+npm start          # abre http://127.0.0.1:4477 no navegador
+npm run dev        # reinicia ao editar o servidor, sem abrir o navegador
 npm test
 ```
 
-Arquitetura: Electron com renderer isolado, bridge de IPC com operações restritas, biblioteca JSON local, adaptador LTX no processo principal e protocolo de mídia com suporte a HTTP Range para o player. Não há servidor web público.
+Variáveis opcionais: `PORT` (padrão 4477) e `TAKES_HOME` (pasta da biblioteca; padrão `~/Library/Application Support/Takes`).
 
-Os testes cobrem persistência das referências, validação de parâmetros, seleção de personagens no prompt, recuperação de jobs interrompidos, ordem e versões da playlist e leitura parcial de vídeo. Testes unitários não geram vídeos nem usam GPU. A geração real exige o LTX configurado.
+### App do Mac
+
+```sh
+npm run app           # gera dist/Takes.app
+npm run app:install   # gera e instala em /Applications/Takes.app
+```
+
+O app é uma janela nativa (Swift + WebKit) que inicia o servidor do Takes sozinho, numa porta livre a partir de 4477, e o encerra ao sair. Diálogos, seleção de arquivos, downloads e área de transferência são nativos.
+
+### Fechar no meio de uma geração
+
+A fila fica salva em `~/Library/Application Support/Takes/jobs.json`, com o que está sendo gerado (bloco, id da geração no LTX e como salvar o resultado). Ao sair com tarefas em andamento, o app pergunta:
+
+- **Sair e deixar o LTX terminar**: o LTX conclui a geração atual. Ao abrir o Takes de novo, ele reconhece essa geração, mostra o progresso, salva o bloco e continua a fila.
+- **Sair e cancelar**: cancela no LTX o que está gerando e na fila.
+
+Se o app fechar sozinho ou for encerrado à força, vale a primeira opção. Se a geração se perder enquanto o Takes está fechado (o LTX foi fechado ou começou outra coisa), a tarefa aparece como **Interrompida**, e **Retomar** gera o que faltou. No terminal, `Ctrl+C` cancela as gerações; `SIGTERM` deixa o LTX terminar.
+
+- Precisa do Node.js instalado (Homebrew, `/usr/local` ou o `PATH` do shell de login). O app não embute o Node.
+- O registro do servidor fica em `~/Library/Logs/Takes/servidor.log` (menu Takes → Mostrar registro do servidor).
+- O build exige as ferramentas de linha de comando do Xcode. A assinatura é ad-hoc, para uso local.
+- Depois de mudar o código, rode `npm run app:install` de novo: o app leva uma cópia do servidor e da interface.
+- Não rode `npm start` com o app aberto: os dois usariam a mesma biblioteca de projetos.
+
+## Como funciona
+
+### Projeto
+- **Pré-prompt**: instruções gerais (estilo, época, lente, luz, regras) que entram antes de todo prompt de vídeo e imagem.
+- **Prompt negativo**, resolução, proporção, FPS, seed, áudio e **contexto da continuação** (segundos do bloco anterior enviados ao LTX).
+- **Pasta de saída**: escolhida pelo seletor do macOS ou digitada.
+
+### Personagens
+Foto (envio, enquadramento, zoom, rotação, espelhamento, brilho, contraste e saturação), geração de foto por IA a partir do perfil (opcionalmente partindo da foto atual) e perfil: nome, papel, aparência, figurino, personalidade, voz e notas. **Aparência e figurino entram no prompt** dos blocos em que o personagem aparece. Personalidade e voz servem para você e para a LLM.
+
+### Fundos
+Envie imagens de referência do ambiente e descreva cada uma. A descrição entra no prompt das cenas que usam o fundo. A imagem serve de base para prévias e pode ser o quadro inicial da cena.
+
+### Cenas e continuidade
+Uma cena é uma lista de blocos (2–20 s cada) com prompt, duração e elenco opcional por bloco. O primeiro bloco abre a cena só pelo texto ou a partir de uma imagem inicial (um fundo ou uma prévia). Cada bloco seguinte escolhe como se liga ao anterior:
+
+| Modo | O que o Takes faz | Quando usar |
+|---|---|---|
+| **Continuar o movimento** (padrão) | Recorta os últimos segundos do bloco anterior (com quadros múltiplos de 8 + 1), envia para o `/api/extend` do LTX e salva **só o trecho novo**. | Mesmo plano, a câmera continua rodando. Melhor continuidade de movimento. |
+| **Partir do último quadro** | Extrai o último quadro do bloco anterior e o usa como imagem inicial (image-to-video). | Mudança calma de ação no mesmo plano. Mais rápido. |
+| **Corte** | Gera do zero, a partir da imagem inicial da cena ou só do texto. | Novo plano, ângulo ou lugar. |
+
+Quando um bloco é gerado de novo, os blocos que continuavam dele ficam **Desatualizados**. Use **Daqui em diante** para refazer a sequência a partir desse ponto. Cada nova geração vira um take (`bloco-03_take-2.mp4`) e você escolhe qual take usar.
+
+Durações que o LTX não aceita diretamente (por exemplo 7 s) são geradas na duração seguinte e recortadas no quadro exato. A continuação via extend aceita qualquer duração de 2 a 20 s.
+
+### Prévias
+Gere imagens estáticas para ver como o ambiente vai ficar antes de gerar o vídeo. A prévia pode usar uma imagem de referência (img2img), incluir ou não o elenco e é salva em `pasta de saída/previas/` com um JSON do pedido. Depois você pode usá-la como imagem inicial de uma cena ou salvá-la como fundo.
+
+### Assistir
+**Assistir cena** toca todos os blocos em sequência, sem pausa entre eles, com uma linha do tempo por bloco. O modo **Só as transições** toca apenas o fim de cada bloco e o começo do seguinte (±1,5 s, 2 s ou 3 s) para conferir as emendas. **Exportar unida** gera `cena-NN-…-completa.mp4` para conferência. Os blocos continuam separados.
+
+### Roteiro com LLM
+1. **Baixe o arquivo do projeto** (`<projeto>.takes-llm.json`). Ele traz o pré-prompt, os personagens e fundos com ids, as cenas existentes, as regras do LTX e o formato de resposta.
+2. Descreva a cena e a duração desejada e **copie as instruções**. Cole na LLM junto com o arquivo. Se a LLM não aceita anexos, marque "Incluir o arquivo no texto".
+3. **Cole a resposta** ou abra o `.json`, valide e importe como nova cena ou substituindo uma existente. A importação aceita JSON puro ou dentro de bloco de código, resolve personagens e fundos por id ou nome e recusa blocos acima de 20 s com a lista dos problemas.
+
+Formato do roteiro:
+
+```json
+{
+  "format": "takes.scene-script",
+  "version": 1,
+  "scene": {
+    "title": "Chegada",
+    "synopsis": "Ana chega ao café e procura Bruno.",
+    "backgroundId": "<id ou nome do fundo>",
+    "characterIds": ["<id ou nome>"],
+    "blocks": [
+      { "duration": 8, "continuity": "cut", "prompt": "English paragraph…" },
+      { "duration": 6, "continuity": "continue", "characterIds": ["<id>"], "prompt": "…" }
+    ]
+  }
+}
+```
+
+## Saída
+
+```text
+<pasta de saída>/
+  previas/
+    cena-x-20261123-101500.png
+    cena-x-20261123-101500.json
+  cena-01-chegada/
+    bloco-01.mp4
+    bloco-01.json          # prompt e parâmetros enviados ao LTX
+    bloco-02.mp4
+    bloco-02_take-2.mp4
+    cena-01-chegada-completa.mp4
+```
+
+Renomear ou reordenar cenas depois de gerar muda o nome das próximas pastas. Os takes antigos continuam onde foram salvos.
+
+## Integração com o LTX
+
+O Takes fala com o backend local do LTX Desktop em `127.0.0.1`. Ele encontra o processo `ltx2_server.py`, lê o token de sessão das variáveis de ambiente do processo e a porta com `lsof`. O token só fica em memória. Endpoints usados: `/api/generate`, `/api/extend`, `/api/generate-image`, `/api/generation/progress`, `/api/generate/cancel`, `/api/generate/models-specs`, `/api/models/ltx-versions` e `/api/settings`.
+
+- Os prompts vão como `promptProvenance: "enhanced"`, para o LTX não reescrevê-los.
+- Se o LTX estiver configurado para gerar na nuvem, o Takes desliga essa preferência antes de gerar.
+- O LTX gera uma coisa por vez. O Takes recusa começar se o LTX já estiver ocupado e processa a fila em ordem.
+- A API é interna do LTX Desktop e pode mudar entre versões.
+
+O servidor escuta só em `127.0.0.1`, recusa outros hosts e exige um cabeçalho próprio em toda escrita. Ele só serve arquivos da biblioteca e das pastas de saída dos projetos.
+
+## Estrutura
+
+```text
+server/index.js    HTTP, rotas, eventos (SSE) e mídia com Range
+server/ltx.js      cliente do LTX Desktop
+server/jobs.js     fila e geração dos blocos com continuidade
+server/media.js    FFmpeg/FFprobe
+server/store.js    projetos em JSON
+server/prompts.js  montagem dos prompts
+server/llm.js      arquivo para LLM e importação do roteiro
+public/            interface (JS puro, sem build)
+mac/               app nativo (Swift), ícone e build
+```
 
 ## Licença
 
-MIT para o código do Aivid. O LTX Desktop, os pesos e as imagens possuem suas próprias licenças.
+MIT. O LTX Desktop e os modelos têm licenças próprias.

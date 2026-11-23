@@ -1,23 +1,21 @@
 {
-  "name": "aivid",
+  "name": "takes",
   "version": "0.1.0",
-  "description": "Est\u00fadio local de v\u00eddeos com IA, projetos e personagens para LTX Desktop.",
-  "main": "src/main.cjs",
+  "description": "Estúdio local para gerar cenas longas e contínuas com o LTX Desktop.",
+  "type": "module",
   "private": true,
-  "author": "belizariogr",
   "license": "MIT",
+  "bin": {
+    "takes": "server/index.js"
+  },
   "scripts": {
-    "start": "env -u ELECTRON_RUN_AS_NODE electron .",
-    "test": "node --test test/*.test.cjs",
-    "check": "node --check src/main.cjs && node --check src/core.cjs && node --check src/ltx.cjs && node --check src/renderer.js",
-    "package": "npx --yes node@24 node_modules/@electron/packager/bin/electron-packager.mjs . Aivid --platform=darwin --arch=arm64 --out=dist --overwrite --app-bundle-id=com.belizariogr.aivid --ignore='^/(test|dist|docs|\\.git)(/|$)'"
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js --no-open",
+    "test": "node --test test/",
+    "app": "sh mac/build.sh",
+    "app:install": "sh mac/build.sh --install"
   },
-  "devDependencies": {
-    "electron": "45.4.1",
-    "@electron/packager": "20.3.0"
-  },
-  "productName": "Aivid",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=20.10"
   }
 }
