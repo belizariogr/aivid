@@ -1,6 +1,6 @@
 #!/bin/sh
 # Gera dist/Takes.app. Uso: sh mac/build.sh [--install]
-#   --install copia o app para ~/Applications (aparece no Spotlight e no Launchpad).
+#   --install instala em /Applications (aparece no Spotlight e no Launchpad).
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 VERSION=$(node -p "require('$ROOT/package.json').version")
@@ -35,10 +35,17 @@ echo "→ Assinando (ad-hoc, uso local)"
 codesign --force --deep --sign - "$APP" >/dev/null
 
 if [ "${1:-}" = "--install" ]; then
-  mkdir -p "$HOME/Applications"
+  DEST=/Applications/Takes.app
+  # Fecha o app aberto (ele pergunta se houver gerações em andamento).
+  if pgrep -f "Takes.app/Contents/MacOS/Takes" >/dev/null; then
+    osascript -e 'tell application id "com.belizariogr.takes" to quit' || true
+    for _ in $(seq 1 40); do pgrep -f "Takes.app/Contents/MacOS/Takes" >/dev/null || break; sleep 0.5; done
+  fi
+  rm -rf "$DEST"
+  cp -R "$APP" "$DEST"
+  # Versões antigas instaladas na pasta do usuário.
   rm -rf "$HOME/Applications/Takes.app"
-  cp -R "$APP" "$HOME/Applications/Takes.app"
-  echo "✓ Instalado em $HOME/Applications/Takes.app"
+  echo "✓ Instalado em $DEST"
 else
   echo "✓ $APP"
 fi

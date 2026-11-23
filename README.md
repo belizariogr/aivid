@@ -25,7 +25,7 @@ Variáveis opcionais: `PORT` (padrão 4477) e `TAKES_HOME` (pasta da biblioteca;
 
 ```sh
 npm run app           # gera dist/Takes.app
-npm run app:install   # gera e instala em ~/Applications/Takes.app
+npm run app:install   # gera e instala em /Applications/Takes.app
 ```
 
 O app é uma janela nativa (Swift + WebKit) que inicia o servidor do Takes sozinho, numa porta livre a partir de 4477, e o encerra ao sair. Diálogos, seleção de arquivos, downloads e área de transferência são nativos.
