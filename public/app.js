@@ -351,10 +351,18 @@ function overview() {
       <p class="hint">Cole o roteiro completo e gere todas as cenas com uma chave de API do Claude ou da OpenAI. Ou baixe o arquivo do projeto, use outra LLM e importe o que ela devolver.</p>
       <button class="btn primary" data-action="open-llm">Abrir assistente de roteiro</button>
     </section>
+    <section class="card">
+      <h3>Clonar projeto</h3>
+      <p class="hint">Cria um projeto novo com o mesmo pré-prompt, configurações, personagens (com fotos), fundos e cenas. A cópia começa sem vídeos gerados, sem prévias e sem pasta de saída.</p>
+      <button class="btn" data-action="clone-project">Clonar projeto</button>
+    </section>
     <section class="card danger-zone">
-      <h3>Excluir projeto</h3>
-      <p class="hint">Move o projeto para a lixeira da biblioteca do Takes. Os vídeos da pasta de saída não são apagados.</p>
-      <button class="btn danger" data-action="delete-project">Excluir projeto</button>
+      <h3>Limpar e excluir</h3>
+      <p class="hint"><strong>Limpar todas as cenas</strong> apaga as ${p.scenes.length} cenas e mantém personagens, fundos e configurações. <strong>Excluir projeto</strong> move o projeto para a lixeira da biblioteca do Takes. Nos dois casos, os vídeos da pasta de saída não são apagados.</p>
+      <div class="row">
+        <button class="btn danger" data-action="clear-scenes" ${p.scenes.length ? "" : "disabled"}>Limpar todas as cenas</button>
+        <button class="btn danger" data-action="delete-project">Excluir projeto</button>
+      </div>
     </section>
   </div>`;
 }
@@ -893,6 +901,25 @@ const actions = {
   },
   async reveal({ path }) {
     await api("POST", "/api/reveal", { path });
+  },
+  async "clone-project"() {
+    const name = prompt("Nome do novo projeto:", `${state.project.name} (cópia)`);
+    if (name === null) return;
+    await saveNow();
+    const copy = await api("POST", `/api/projects/${state.project.id}/clone`, { name });
+    await loadProjects();
+    await openProject(copy.id, copy);
+    toast("Projeto clonado. Escolha a pasta de saída da cópia antes de gerar.");
+  },
+  async "clear-scenes"() {
+    const n = state.project.scenes.length;
+    if (!confirm(`Apagar as ${n} cenas de "${state.project.name}"? Personagens, fundos e configurações ficam. Os vídeos já gerados continuam na pasta de saída.`)) return;
+    await saveNow();
+    state.project = await api("DELETE", `/api/projects/${state.project.id}/scenes`);
+    state.sceneId = null;
+    await loadProjects();
+    render();
+    toast(`${n} cena(s) apagada(s).`);
   },
   async "delete-project"() {
     if (!confirm(`Excluir o projeto "${state.project.name}"? Os vídeos já gerados continuam na pasta de saída.`)) return;

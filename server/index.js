@@ -86,6 +86,14 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
   route("GET", "/api/projects/:id", ({ id }) => view(store.get(id)));
   route("PUT", "/api/projects/:id", ({ id, body }) => view(store.edit(id, body)));
   route("DELETE", "/api/projects/:id", ({ id }) => (store.remove(id), { ok: true }));
+  route("POST", "/api/projects/:id/clone", ({ id, body }) => view(store.clone(id, body.name)));
+  // Apaga as cenas do projeto. Os vídeos já gerados continuam na pasta de saída.
+  route("DELETE", "/api/projects/:id/scenes", ({ id }) => {
+    store.get(id);
+    if (queue.list().some((j) => j.projectId === id && j.kind === "video" && ["queued", "running"].includes(j.status)))
+      throw Object.assign(new Error("Há cenas deste projeto na fila. Cancele as gerações antes de limpar as cenas."), { status: 409 });
+    return view(store.update(id, (p) => void (p.scenes = [])));
+  });
 
   route("POST", "/api/projects/:id/characters", ({ id, body }) => {
     const character = normalizeCharacter({ ...body, id: newId() });

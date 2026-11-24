@@ -52,6 +52,8 @@ Se o app fechar sozinho ou for encerrado à força, vale a primeira opção. Se 
 - **Prompt negativo**, resolução, proporção, FPS, seed, áudio e **contexto da continuação** (segundos do bloco anterior enviados ao LTX).
 - **Pasta de saída**: escolhida pelo seletor do macOS ou digitada.
 - **Gerar todas as cenas**: põe todas as cenas na fila do LTX, em ordem, e abre a aba Fila. **Só os pendentes** gera apenas os blocos que ainda não têm vídeo.
+- **Clonar projeto**: cria uma cópia com pré-prompt, configurações, personagens (com fotos), fundos e cenas. A cópia começa sem vídeos, sem prévias e sem pasta de saída.
+- **Limpar todas as cenas**: apaga as cenas e mantém personagens, fundos e configurações. Os vídeos continuam na pasta de saída, e uma cena nova com o mesmo nome continua a numeração (`_take-2`…) em vez de sobrescrever.
 
 ### Personagens
 Foto (envio, enquadramento, zoom, rotação, espelhamento, brilho, contraste e saturação), geração de foto por IA a partir do perfil (opcionalmente partindo da foto atual) e perfil: nome, papel, aparência, figurino, personalidade, voz e notas. **Aparência e figurino entram no prompt** dos blocos em que o personagem aparece. Personalidade e voz servem para você e para a LLM.

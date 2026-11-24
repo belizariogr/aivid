@@ -380,8 +380,11 @@ export class JobQueue {
     const folder = sceneFolder(project, scene);
     const work = path.join(folder, ".trabalho");
     await fsp.mkdir(work, { recursive: true });
-    const takeNo = block.takes.length + 1;
-    const base = `bloco-${pad(index + 1)}${takeNo > 1 ? `_take-${takeNo}` : ""}`;
+    // Pula nomes já usados na pasta (cenas apagadas ou recriadas não sobrescrevem vídeos antigos).
+    const baseName = (n) => `bloco-${pad(index + 1)}${n > 1 ? `_take-${n}` : ""}`;
+    let takeNo = block.takes.length + 1;
+    while (fs.existsSync(path.join(folder, `${baseName(takeNo)}.mp4`))) takeNo++;
+    const base = baseName(takeNo);
     const signal = job.abort.signal;
     const label = `Bloco ${index + 1} de ${scene.blocks.length}`;
     const inflight = {
