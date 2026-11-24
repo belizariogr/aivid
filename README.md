@@ -52,6 +52,7 @@ Se o app fechar sozinho ou for encerrado à força, vale a primeira opção. Se 
 - **Prompt negativo**, resolução, proporção, FPS, seed, áudio e **contexto da continuação** (segundos do bloco anterior enviados ao LTX).
 - **Pasta de saída**: escolhida pelo seletor do macOS ou digitada.
 - **Gerar todas as cenas**: põe todas as cenas na fila do LTX, em ordem, e abre a aba Fila. **Só os pendentes** gera apenas os blocos que ainda não têm vídeo.
+- **Novas tentativas**: se um bloco falhar (erro do LTX, conexão que caiu, FFmpeg), ele é gerado de novo até mais duas vezes, com pausas de 5 s e 15 s. Só depois da terceira falha a tarefa para com erro e **Retomar** continua do bloco que falhou. Erros que só você resolve (pasta de saída ausente, bloco anterior sem vídeo) param na hora.
 - **Clonar projeto**: cria uma cópia com pré-prompt, configurações, personagens (com fotos), fundos e cenas. A cópia começa sem vídeos, sem prévias e sem pasta de saída.
 - **Limpar todas as cenas**: apaga as cenas e mantém personagens, fundos e configurações. Os vídeos continuam na pasta de saída, e uma cena nova com o mesmo nome continua a numeração (`_take-2`…) em vez de sobrescrever.
 

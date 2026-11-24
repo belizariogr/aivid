@@ -161,6 +161,77 @@ test("continuation requires the previous block", { skip: !ffmpeg && "ffmpeg ause
   assert.match(queue.jobs[0].error, /bloco 1 ainda não foi gerado/);
 });
 
+// LTX que falha nas primeiras `failures` gerações e depois funciona.
+class FlakyLtx extends FakeLtx {
+  constructor(dir, failures) {
+    super(dir);
+    this.failures = failures;
+  }
+  async generateVideo(req) {
+    if (this.failures-- > 0) {
+      this.calls.push(["fail", req]);
+      throw new Error("CUDA out of memory");
+    }
+    return super.generateVideo(req);
+  }
+}
+
+function flakyScene(failures) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-retry-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FlakyLtx(fs.mkdtempSync(path.join(root, "ltx-")), failures);
+  const queue = new JobQueue({ store, ltx });
+  queue.retryDelays = [0, 0];
+  const p = store.create("X");
+  store.edit(p.id, { outputDir: path.join(root, "out"), settings: { fps: 24 }, scenes: [{ id: "s", blocks: [{ id: "a", prompt: "a", duration: 2 }, { id: "b", prompt: "b", duration: 2, continuity: "cut" }] }] });
+  return { store, ltx, queue, projectId: p.id };
+}
+
+test("a failed block is generated again up to two more times", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const { store, ltx, queue, projectId } = flakyScene(2);
+  const phases = [];
+  queue.onChange = (jobs) => phases.push(jobs[0]?.phase);
+  queue.addScene(projectId, "s");
+  await waitIdle(queue);
+  assert.equal(queue.jobs[0].status, "complete", queue.jobs[0].error);
+  assert.deepEqual(ltx.calls.map((c) => c[0]), ["fail", "fail", "generate", "generate"]);
+  assert.ok(phases.some((x) => /Bloco 1 falhou \(CUDA out of memory\)\. Tentando de novo/.test(x || "")));
+  assert.ok(phases.some((x) => /tentativa 3 de 3/.test(x || "")));
+  const scene = store.get(projectId).scenes[0];
+  assert.deepEqual(scene.blocks.map((_, i) => blockState(scene, i)), ["ready", "ready"]);
+  assert.equal(scene.blocks[0].takes.length, 1);
+});
+
+test("a block that keeps failing stops the scene after three attempts", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const { ltx, queue, projectId } = flakyScene(3);
+  queue.addScene(projectId, "s");
+  await waitIdle(queue);
+  assert.equal(queue.jobs[0].status, "error");
+  assert.match(queue.jobs[0].error, /Bloco 1 falhou 3 vezes\. Último erro: CUDA out of memory/);
+  assert.deepEqual(ltx.calls.map((c) => c[0]), ["fail", "fail", "fail"]);
+});
+
+test("errors only the user can fix are not retried", { skip: !ffmpeg && "ffmpeg ausente" }, async () => {
+  const { ltx, queue, projectId, store } = flakyScene(0);
+  store.edit(projectId, { outputDir: "" });
+  queue.addScene(projectId, "s");
+  await waitIdle(queue);
+  assert.equal(queue.jobs[0].status, "error");
+  assert.match(queue.jobs[0].error, /^Escolha a pasta de saída/);
+  assert.equal(ltx.calls.length, 0);
+});
+
+test("cancelling during the pause before a retry stops the job", { skip: !ffmpeg && "ffmpeg ausente", timeout: 30_000 }, async () => {
+  const { ltx, queue, projectId } = flakyScene(1);
+  queue.retryDelays = [10_000, 10_000];
+  const job = queue.addScene(projectId, "s");
+  while (!/Tentando de novo/.test(job.phase)) await new Promise((r) => setTimeout(r, 10));
+  await queue.cancel(job.id);
+  await waitIdle(queue);
+  assert.equal(job.status, "cancelled");
+  assert.deepEqual(ltx.calls.map((c) => c[0]), ["fail"]);
+});
+
 test("preview images are saved in the output folder", { skip: !ffmpeg && "ffmpeg ausente" }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
   const store = new Store(path.join(root, "lib"));
