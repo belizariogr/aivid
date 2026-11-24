@@ -70,3 +70,56 @@ test("project lifecycle, photo upload, script import and media guard", async () 
     s.close();
   }
 });
+
+test("queues every scene of the project at once", async () => {
+  const s = await start();
+  try {
+    const p = await (await s.call("POST", "/api/projects", { name: "Longa" })).json();
+    const none = await s.call("POST", `/api/projects/${p.id}/generate-all`, {});
+    assert.equal(none.status, 409);
+    const script = JSON.stringify({
+      scenes: [
+        { title: "Um", blocks: [{ duration: 5, prompt: "A." }, { duration: 5, prompt: "B." }] },
+        { title: "Dois", blocks: [{ duration: 8, prompt: "C." }] },
+      ],
+    });
+    await s.call("POST", `/api/projects/${p.id}/import-script`, { text: script });
+    const r = await (await s.call("POST", `/api/projects/${p.id}/generate-all`, {})).json();
+    assert.deepEqual(r.added.map((j) => j.title), ["Um — blocos 1–2", "Dois — bloco 1"]);
+    assert.deepEqual(r.added.map((j) => j.blockIds.length), [2, 1]);
+  } finally {
+    s.close();
+  }
+});
+
+test("clones a project with its assets and clears all scenes", async () => {
+  const s = await start();
+  try {
+    const p = await (await s.call("POST", "/api/projects", { name: "Original" })).json();
+    let proj = await (await s.call("POST", `/api/projects/${p.id}/characters`, { name: "Ana" })).json();
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    proj = await (await s.call("POST", `/api/projects/${p.id}/characters/${proj.characters[0].id}/photo`, { dataUrl: png })).json();
+    await s.call("PUT", `/api/projects/${p.id}`, { outputDir: "/tmp/original" });
+    await s.call("POST", `/api/projects/${p.id}/import-script`, { text: JSON.stringify({ scene: { title: "Um", blocks: [{ duration: 5, prompt: "A." }] } }) });
+    const original = await (await fetch(`${s.base}/api/projects/${p.id}`)).json();
+
+    const copy = await (await s.call("POST", `/api/projects/${p.id}/clone`, { name: "Cópia" })).json();
+    assert.equal(copy.name, "Cópia");
+    assert.notEqual(copy.id, p.id);
+    assert.equal(copy.outputDir, "");
+    assert.ok(copy.characters[0].photo.includes(copy.id));
+    assert.ok(fs.existsSync(copy.characters[0].photo));
+    assert.equal(copy.scenes[0].title, "Um");
+    assert.notEqual(copy.scenes[0].id, original.scenes[0].id);
+    assert.deepEqual(copy.scenes[0].blocks[0].takes, []);
+
+    const cleared = await (await s.call("DELETE", `/api/projects/${copy.id}/scenes`)).json();
+    assert.deepEqual(cleared.scenes, []);
+    assert.equal(cleared.characters.length, 1);
+    const still = await (await fetch(`${s.base}/api/projects/${p.id}`)).json();
+    assert.equal(still.scenes.length, 1);
+    assert.ok(fs.existsSync(still.characters[0].photo));
+  } finally {
+    s.close();
+  }
+});

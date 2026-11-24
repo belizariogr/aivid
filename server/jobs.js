@@ -130,6 +130,22 @@ export class JobQueue {
     });
   }
 
+  // Põe na fila todas as cenas do projeto, em ordem. Pula as que já estão na fila ou não têm o que gerar.
+  addAllScenes(projectId, { missing = false } = {}) {
+    const project = this.store.get(projectId);
+    const added = [];
+    const skipped = [];
+    for (const scene of project.scenes) {
+      try {
+        added.push(this.addScene(projectId, scene.id, { missing }));
+      } catch (error) {
+        skipped.push({ sceneId: scene.id, title: scene.title, reason: error.message });
+      }
+    }
+    if (!added.length) throw Object.assign(new Error(missing ? "Nenhuma cena tem blocos pendentes." : "Nenhuma cena para gerar."), { status: 409, details: skipped.map((x) => `${x.title}: ${x.reason}`) });
+    return { added, skipped };
+  }
+
   async cancel(id) {
     const job = this.jobs.find((j) => j.id === id);
     if (!job) throw new Error("Tarefa não encontrada.");
@@ -364,8 +380,11 @@ export class JobQueue {
     const folder = sceneFolder(project, scene);
     const work = path.join(folder, ".trabalho");
     await fsp.mkdir(work, { recursive: true });
-    const takeNo = block.takes.length + 1;
-    const base = `bloco-${pad(index + 1)}${takeNo > 1 ? `_take-${takeNo}` : ""}`;
+    // Pula nomes já usados na pasta (cenas apagadas ou recriadas não sobrescrevem vídeos antigos).
+    const baseName = (n) => `bloco-${pad(index + 1)}${n > 1 ? `_take-${n}` : ""}`;
+    let takeNo = block.takes.length + 1;
+    while (fs.existsSync(path.join(folder, `${baseName(takeNo)}.mp4`))) takeNo++;
+    const base = baseName(takeNo);
     const signal = job.abort.signal;
     const label = `Bloco ${index + 1} de ${scene.blocks.length}`;
     const inflight = {

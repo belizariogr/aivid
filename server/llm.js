@@ -70,6 +70,54 @@ export function buildBrief(project) {
   };
 }
 
+const FULL_SCRIPT_INSTRUCTIONS = `You are a screenwriter and prompt writer for LTX, a local text/image-to-video model.
+The user gives you the complete script of a video (a screenplay, a story or an outline, in any language). Turn ALL of it into scenes for the video project described in "project", in the order of the script, and split every scene into consecutive blocks.
+
+Hard rules:
+1. A scene is one continuous stretch of action in one place and time. Start a new scene when the script changes place or jumps in time. Cover the whole script: do not skip events and do not add major events that are not in it.
+2. Each block is at most 20 seconds and at least 2 seconds ("duration", integer seconds). LTX cannot render longer clips, so long actions must be split across several blocks.
+3. Blocks of a scene play back to back and must feel continuous. Block 1 of each scene opens it. For each later block choose "continuity":
+   - "continue": the camera keeps rolling; the block continues the motion of the previous one (default; use it for the same shot).
+   - "frame": starts from the last frame of the previous block; use it for a calm change of action in the same shot.
+   - "cut": a hard cut to a new shot or angle inside the scene.
+4. "prompt" is what LTX will render for that block, written in English as one paragraph of 3 to 7 sentences, present tense, in chronological order: who is in frame, what they do, how they move, the camera (framing, lens, movement), the lighting and the mood. Describe only what is visible or audible during that block. No lists, no markdown, no scene numbers, no "Block 2" references.
+5. Dialogue: when "project.video.audio" is true, put the spoken lines in the prompt of the block where they are said, in quotes, with who says them and how (keep the script's language for the line itself). When audio is false, show the conversation visually instead of quoting it.
+6. The project pre-prompt (style, look, rules) is added automatically before every prompt, and the appearance and wardrobe of each listed character are added automatically too. Do not repeat them; refer to characters by name and describe only what changes (expression, pose, action).
+7. Use only characters and backgrounds that exist in "project" and refer to them by their "id" in "characterIds" and "backgroundId". "characterIds" in a block lists who appears in that block; omit it to use the scene cast. A person in the script who is not a project character is described in the prompt text and not listed in "characterIds". Use "backgroundId": null when no background fits.
+8. Keep continuity explicit: the end of a block's prompt should leave characters where the next block picks them up.
+9. When the user gives a total length, the sum of all block durations of all scenes should be close to it. Otherwise pace the blocks to the script (an action or a line usually takes 4 to 10 seconds).
+10. "title" and "synopsis" of each scene are written in the language of the script.
+11. Reply with ONLY a JSON object that matches "responseFormat.example" exactly (same keys), with no comments and no text before or after it.`;
+
+// Instruções e mensagem para gerar o roteiro completo pela API de um provedor.
+export function fullScriptRequest(project, { script = "", seconds = null } = {}) {
+  const brief = buildBrief(project);
+  const [first, second] = brief.responseFormat.example.scene.blocks;
+  const example = brief.responseFormat.example.scene;
+  delete brief.instructions;
+  brief.responseFormat = {
+    description: "Return exactly this structure, with one entry in \"scenes\" per scene of the script. Every block needs duration and prompt.",
+    example: {
+      format: SCRIPT_FORMAT,
+      version: 1,
+      scenes: [
+        { ...example, title: "First scene title", blocks: [first, second] },
+        { ...example, title: "Second scene title", blocks: [{ ...first, prompt: "English paragraph describing the opening shot of the next scene." }] },
+      ],
+    },
+  };
+  const system = `${FULL_SCRIPT_INSTRUCTIONS}\n\nThe project file:\n\n${JSON.stringify(brief, null, 2)}`;
+  const lines = ["Write the scenes for this complete script."];
+  if (seconds) lines.push(`Total length of the video: about ${seconds} seconds.`);
+  lines.push("", "<script>", String(script).trim(), "</script>");
+  return { system, user: lines.join("\n") };
+}
+
+// Pede à LLM para corrigir um roteiro que não passou na validação.
+export function repairRequest(errors) {
+  return `Your reply could not be imported. Problems:\n${errors.map((e) => `- ${e}`).join("\n")}\n\nReply again with the complete corrected JSON (all scenes and blocks), with no text before or after it.`;
+}
+
 // Texto que o usuário cola no chat da LLM junto com o arquivo.
 export function userPrompt(project, { request = "", seconds = null, fileName = "projeto.json", inline = false, brief = null }) {
   const lines = [

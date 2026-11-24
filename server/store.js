@@ -196,6 +196,29 @@ export class Store {
     return this.save(mergeEdit(this.get(id), input));
   }
 
+  // Copia personagens (com fotos), fundos, configurações e cenas. Os vídeos ficam com o original:
+  // a cópia começa sem takes, sem prévias e sem pasta de saída, para não misturar os arquivos.
+  clone(id, name) {
+    const source = this.get(id);
+    const copy = structuredClone(source);
+    const t = now();
+    Object.assign(copy, { id: newId(), name: str(name, 200).trim() || `${source.name} (cópia)`, createdAt: t, updatedAt: t, outputDir: "", previews: [] });
+    const from = path.join(this.projectDir(id), "assets");
+    const to = path.join(this.projectDir(copy.id), "assets");
+    if (fs.existsSync(from)) fs.cpSync(from, to, { recursive: true });
+    const moved = (file) => (typeof file === "string" && file.startsWith(from + path.sep) ? path.join(to, path.relative(from, file)) : file);
+    for (const c of copy.characters) c.photo = moved(c.photo);
+    for (const b of copy.backgrounds) b.image = moved(b.image);
+    // Ids novos nas cenas e blocos: a fila identifica as tarefas por cena.
+    for (const scene of copy.scenes) {
+      scene.id = newId();
+      scene.exports = [];
+      if (scene.start?.kind === "preview") scene.start = { kind: "none", id: null };
+      for (const block of scene.blocks) Object.assign(block, { id: newId(), takes: [], selectedTakeId: null });
+    }
+    return this.save(copy);
+  }
+
   remove(id) {
     this.get(id);
     fs.mkdirSync(this.trash, { recursive: true });

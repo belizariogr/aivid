@@ -229,3 +229,9 @@ label.inline input { width: 70px; }
   .scene-list { position: static; }
   .sidebar { width: 180px; }
 }
+.steps details > summary { cursor: pointer; padding: 2px 0; }
+.steps details[open] > summary { margin-bottom: 10px; }
+.steps details h4 { margin: 14px 0 6px; }
+.steps .form-row select { max-width: 340px; }
+.steps .row input.grow { width: auto; min-width: 0; }
+.steps a { color: var(--accent); }

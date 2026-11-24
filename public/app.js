@@ -41,6 +41,10 @@ function toast(message, kind = "info") {
 const fail = (e) => toast(e.message, "error");
 
 // ---------- estado ----------
+const newLlmState = () => ({
+  request: "", seconds: "", inline: false, text: "", fileName: "", script: "", result: null, error: null, target: "",
+  fullScript: "", fullSeconds: "", model: "", task: null, manual: false,
+});
 const state = {
   projects: [],
   project: null,
@@ -49,7 +53,8 @@ const state = {
   jobs: [],
   ltx: null,
   modal: null, // { type, ... }
-  llm: { request: "", seconds: "", inline: false, text: "", fileName: "", script: "", result: null, error: null, target: "" },
+  llm: newLlmState(),
+  ai: { settings: null, models: [], errors: [], loading: false, imported: new Set() },
   previewForm: { sceneId: "", backgroundId: "", strength: 0.6, withCharacters: true, prompt: "" },
 };
 
@@ -294,6 +299,14 @@ function projectView() {
 
 const option = (value, label, current) => `<option value="${esc(value)}" ${String(value) === String(current) ? "selected" : ""}>${esc(label)}</option>`;
 
+function generateAllSummary(p) {
+  if (!p.scenes.length) return `<p class="hint">Crie ou importe cenas para gerar os vídeos.</p>`;
+  const blocks = p.scenes.flatMap((s) => s.blocks);
+  const done = blocks.filter((b) => b.state === "ready").length;
+  const seconds = p.scenes.reduce((n, s) => n + sceneSeconds(s), 0);
+  return `<p class="hint">Põe todas as cenas na fila do LTX, em ordem. ${p.scenes.length} ${p.scenes.length === 1 ? "cena" : "cenas"} · ${blocks.length} blocos · ${fmtTime(seconds)} de vídeo · ${done}/${blocks.length} prontos.</p>`;
+}
+
 function overview() {
   const p = state.project;
   const s = p.settings;
@@ -326,14 +339,30 @@ function overview() {
       <p class="hint">Mude as configurações de vídeo antes de gerar a cena: os blocos de continuação herdam a resolução do bloco anterior.</p>
     </section>
     <section class="card">
+      <h3>Gerar vídeos</h3>
+      ${generateAllSummary(p)}
+      <div class="row">
+        <button class="btn primary" data-action="generate-all" ${p.scenes.length ? "" : "disabled"}>Gerar todas as cenas</button>
+        <button class="btn" data-action="generate-all-missing" ${p.scenes.length ? "" : "disabled"} title="Em todas as cenas, gera só os blocos que ainda não têm vídeo">Só os pendentes</button>
+      </div>
+    </section>
+    <section class="card">
       <h3>Roteiro com LLM</h3>
-      <p class="hint">Baixe o arquivo do projeto, cole as instruções em uma LLM (ChatGPT, Claude, Gemini…) e importe o roteiro da cena que ela devolver.</p>
+      <p class="hint">Cole o roteiro completo e gere todas as cenas com uma chave de API do Claude ou da OpenAI. Ou baixe o arquivo do projeto, use outra LLM e importe o que ela devolver.</p>
       <button class="btn primary" data-action="open-llm">Abrir assistente de roteiro</button>
     </section>
+    <section class="card">
+      <h3>Clonar projeto</h3>
+      <p class="hint">Cria um projeto novo com o mesmo pré-prompt, configurações, personagens (com fotos), fundos e cenas. A cópia começa sem vídeos gerados, sem prévias e sem pasta de saída.</p>
+      <button class="btn" data-action="clone-project">Clonar projeto</button>
+    </section>
     <section class="card danger-zone">
-      <h3>Excluir projeto</h3>
-      <p class="hint">Move o projeto para a lixeira da biblioteca do Takes. Os vídeos da pasta de saída não são apagados.</p>
-      <button class="btn danger" data-action="delete-project">Excluir projeto</button>
+      <h3>Limpar e excluir</h3>
+      <p class="hint"><strong>Limpar todas as cenas</strong> apaga as ${p.scenes.length} cenas e mantém personagens, fundos e configurações. <strong>Excluir projeto</strong> move o projeto para a lixeira da biblioteca do Takes. Nos dois casos, os vídeos da pasta de saída não são apagados.</p>
+      <div class="row">
+        <button class="btn danger" data-action="clear-scenes" ${p.scenes.length ? "" : "disabled"}>Limpar todas as cenas</button>
+        <button class="btn danger" data-action="delete-project">Excluir projeto</button>
+      </div>
     </section>
   </div>`;
 }
@@ -620,7 +649,7 @@ function renderModal() {
     root.innerHTML = "";
     return;
   }
-  const content = m.type === "character" ? characterModal(m) : m.type === "llm" ? llmModal() : "";
+  const content = m.type === "character" ? characterModal(m) : m.type === "llm" ? llmModal() : m.type === "ai-keys" ? aiKeysModal(m) : "";
   root.innerHTML = `<div class="overlay" data-action="overlay-close">${content}</div>`;
 }
 
@@ -672,6 +701,59 @@ function characterModal(m) {
   </div>`;
 }
 
+const PHASE_SECONDS = (t) => Math.round((Date.now() - t.startedAt) / 1000);
+
+function modelSelect() {
+  const a = state.ai;
+  if (!a.settings) return `<span class="muted small">Carregando…</span>`;
+  const configured = a.settings.providers.filter((p) => p.configured);
+  if (!configured.length) return `<button class="btn primary" data-action="open-ai-keys">Cadastrar chave de API…</button>`;
+  if (a.loading && !a.models.length) return `<span class="muted small">Buscando modelos…</span>`;
+  const groups = configured
+    .map((p) => {
+      const list = a.models.filter((m) => m.provider === p.id);
+      return list.length ? `<optgroup label="${esc(p.name)}">${list.map((m) => option(`${m.provider}:${m.id}`, m.name, state.llm.model)).join("")}</optgroup>` : "";
+    })
+    .join("");
+  return `<select data-change="llm-model" aria-label="Modelo">${option("", "Escolha o modelo…", state.llm.model)}${groups}</select>
+    <button class="btn ghost small" data-action="refresh-ai-models" title="Atualizar a lista de modelos">↻</button>`;
+}
+
+function aiSection() {
+  const l = state.llm;
+  const a = state.ai;
+  const t = l.task;
+  const running = t?.status === "running";
+  const configured = a.settings?.providers.some((p) => p.configured);
+  return `<section>
+    <h3><span class="step">1</span> Gere as cenas pela API</h3>
+    <p class="hint">Cole o roteiro completo. A LLM divide em cenas e blocos de até 20 s usando os personagens e fundos do projeto. O resultado aparece abaixo para revisar antes de importar.</p>
+    <div class="form-row">
+      <span class="muted small">Modelo</span>${modelSelect()}
+      <span class="grow"></span>
+      ${configured ? `<button class="btn ghost small" data-action="open-ai-keys">Chaves de API…</button>` : ""}
+    </div>
+    ${a.errors.map((e) => `<p class="error small">${esc(e.error)}</p>`).join("")}
+    <textarea data-focus="llm-full" data-llm="fullScript" rows="10" placeholder="Cole aqui o roteiro completo: cenas, ações e falas.">${esc(l.fullScript)}</textarea>
+    <div class="row">
+      <label class="inline">Duração total <input type="number" min="2" data-focus="llm-full-seconds" data-llm="fullSeconds" value="${esc(l.fullSeconds)}" placeholder="opcional"> s</label>
+      <span class="grow"></span>
+      ${
+        running
+          ? `<button class="btn danger" data-action="ai-cancel">Cancelar</button>`
+          : `<button class="btn primary" data-action="ai-generate" ${configured ? "" : "disabled"}>Gerar cenas</button>`
+      }
+    </div>
+    ${running ? `<p class="hint ai-progress">${aiProgress(t)}</p>` : ""}
+    ${t?.status === "error" ? `<pre class="error">${esc(t.error)}</pre>` : ""}
+  </section>`;
+}
+
+function aiProgress(t) {
+  const size = t.chars ? ` · ${(t.chars / 1000).toFixed(1)} mil caracteres` : "";
+  return `${esc(t.modelName)}: ${esc(t.phase)}${size} · ${PHASE_SECONDS(t)} s`;
+}
+
 function llmModal() {
   const p = state.project;
   const l = state.llm;
@@ -679,34 +761,36 @@ function llmModal() {
   return `<div class="modal wide" role="dialog" aria-label="Roteiro com LLM">
     <div class="modal-head"><h2>Roteiro com LLM</h2><button class="icon-btn" data-action="close-modal" title="Fechar">✕</button></div>
     <div class="steps">
+      ${aiSection()}
       <section>
-        <h3><span class="step">1</span> Baixe o arquivo do projeto</h3>
-        <p class="hint">Contém o pré-prompt, os personagens, os fundos, as cenas existentes, as regras do LTX (blocos de até 20 s) e o formato de resposta.</p>
-        <a class="btn" href="/api/projects/${p.id}/llm-brief" download>Baixar ${esc(l.fileName || "arquivo do projeto")}</a>
+        <details ${l.manual ? "open" : ""} data-toggle="llm-manual">
+          <summary><strong>Ou faça em outra LLM, sem chave de API</strong> <span class="muted small">(ChatGPT, Claude, Gemini… copiando e colando)</span></summary>
+          <h4>Baixe o arquivo do projeto</h4>
+          <p class="hint">Contém o pré-prompt, os personagens, os fundos, as cenas existentes, as regras do LTX (blocos de até 20 s) e o formato de resposta.</p>
+          <a class="btn" href="/api/projects/${p.id}/llm-brief" download>Baixar ${esc(l.fileName || "arquivo do projeto")}</a>
+          <h4>Copie as instruções para a LLM</h4>
+          <label>O que acontece na cena<textarea data-focus="llm-request" data-llm="request" rows="3" placeholder="Ex.: Ana chega à cafeteria na chuva, procura Bruno, os dois discutem e ela sai sem pedir nada.">${esc(l.request)}</textarea></label>
+          <div class="form-row">
+            <label class="inline">Duração total <input type="number" min="2" data-focus="llm-seconds" data-llm="seconds" value="${esc(l.seconds)}" placeholder="ex. 90"> s</label>
+            <label class="check"><input type="checkbox" data-change="llm-inline" ${l.inline ? "checked" : ""}> Incluir o arquivo no texto (para LLMs sem anexo)</label>
+          </div>
+          <textarea class="mono" readonly rows="${l.inline ? 10 : 7}" data-focus="llm-text">${esc(l.text)}</textarea>
+          <button class="btn primary" data-action="copy-llm">Copiar instruções</button>
+        </details>
       </section>
       <section>
-        <h3><span class="step">2</span> Copie as instruções para a LLM</h3>
-        <label>O que acontece na cena<textarea data-focus="llm-request" data-llm="request" rows="3" placeholder="Ex.: Ana chega à cafeteria na chuva, procura Bruno, os dois discutem e ela sai sem pedir nada.">${esc(l.request)}</textarea></label>
-        <div class="form-row">
-          <label class="inline">Duração total <input type="number" min="2" data-focus="llm-seconds" data-llm="seconds" value="${esc(l.seconds)}" placeholder="ex. 90"> s</label>
-          <label class="check"><input type="checkbox" data-change="llm-inline" ${l.inline ? "checked" : ""}> Incluir o arquivo no texto (para LLMs sem anexo)</label>
-        </div>
-        <textarea class="mono" readonly rows="${l.inline ? 10 : 7}" data-focus="llm-text">${esc(l.text)}</textarea>
-        <button class="btn primary" data-action="copy-llm">Copiar instruções</button>
-      </section>
-      <section>
-        <h3><span class="step">3</span> Importe o roteiro devolvido</h3>
-        <textarea class="mono" data-focus="llm-script" data-llm="script" rows="7" placeholder='Cole aqui a resposta da LLM (o JSON com "format": "takes.scene-script")'>${esc(l.script)}</textarea>
+        <h3><span class="step">2</span> Revise e importe o roteiro</h3>
+        <textarea class="mono" data-focus="llm-script" data-llm="script" rows="7" placeholder='O roteiro gerado aparece aqui. Você também pode colar a resposta de outra LLM (o JSON com "format": "takes.scene-script")'>${esc(l.script)}</textarea>
         <div class="row">
           <button class="btn" data-action="llm-open-file">Abrir arquivo .json…</button>
           <button class="btn" data-action="llm-validate">Validar</button>
-          <select data-change="llm-target">${option("", "Adicionar como nova cena", l.target)}${p.scenes.map((s) => option(s.id, `Substituir: ${s.title}`, l.target)).join("")}</select>
+          <select data-change="llm-target">${option("", res && res.scenes.length > 1 ? `Adicionar como ${res.scenes.length} novas cenas` : "Adicionar como nova cena", l.target)}${p.scenes.map((s) => option(s.id, `Substituir: ${s.title}`, l.target)).join("")}</select>
           <button class="btn primary" data-action="llm-import">Importar</button>
         </div>
         ${l.error ? `<pre class="error">${esc(l.error)}</pre>` : ""}
         ${
           res
-            ? `<div class="card inset">${res.scenes
+            ? `<div class="card inset">${res.scenes.length > 1 ? `<p class="muted small">${res.scenes.length} cenas · ${res.scenes.reduce((n, s) => n + s.blocks.length, 0)} blocos · ${fmtTime(res.scenes.reduce((n, s) => n + sceneSeconds(s), 0))}</p>` : ""}${res.scenes
                 .map(
                   (s) => `<strong>${esc(s.title)}</strong> — ${s.blocks.length} blocos, ${fmtTime(sceneSeconds(s))}
                   <ol class="script-preview">${s.blocks.map((b) => `<li><span class="pill">${b.duration}s · ${b.continuity}</span> ${esc(b.prompt.slice(0, 180))}${b.prompt.length > 180 ? "…" : ""}</li>`).join("")}</ol>`,
@@ -716,6 +800,29 @@ function llmModal() {
         }
       </section>
     </div>
+  </div>`;
+}
+
+function aiKeysModal(m) {
+  const providers = state.ai.settings?.providers ?? [];
+  return `<div class="modal" role="dialog" aria-label="Chaves de API">
+    <div class="modal-head"><h2>Chaves de API</h2><button class="icon-btn" data-action="close-ai-keys" title="Fechar">✕</button></div>
+    <div class="steps">
+      <p class="hint">Cadastre uma ou mais. As chaves ficam só neste Mac, na biblioteca do Takes, e valem para todos os projetos. Cada geração é cobrada na sua conta do provedor.</p>
+      ${providers
+        .map(
+          (p) => `<section>
+          <h3>${esc(p.name)}</h3>
+          <div class="row">
+            <input type="password" autocomplete="off" spellcheck="false" class="mono grow" data-focus="ai-key-${p.id}" data-ai-key="${p.id}" value="${esc(m.keys[p.id] ?? "")}" placeholder="${p.configured ? `Salva (${esc(p.hint)}). Cole outra para trocar.` : "Cole a chave aqui"}">
+            ${p.configured ? `<button class="btn ghost danger small" data-action="remove-ai-key" data-id="${p.id}">Remover</button>` : ""}
+          </div>
+          <p class="hint"><a href="${esc(p.keyUrl)}" target="_blank" rel="noopener">Criar uma chave</a></p>
+        </section>`,
+        )
+        .join("")}
+    </div>
+    <div class="modal-foot"><button class="btn ghost" data-action="close-ai-keys">Cancelar</button><button class="btn primary" data-action="save-ai-keys">Salvar</button></div>
   </div>`;
 }
 
@@ -741,16 +848,26 @@ document.addEventListener("input", (e) => {
   const el = e.target;
   if (el.dataset.llm) {
     state.llm[el.dataset.llm] = el.value;
-    if (el.dataset.llm !== "script") refreshLlmText();
-    else {
+    if (el.dataset.llm === "request" || el.dataset.llm === "seconds") refreshLlmText();
+    else if (el.dataset.llm === "script") {
       state.llm.result = null;
       state.llm.error = null;
     }
   }
+  if (el.dataset.aiKey && state.modal?.type === "ai-keys") state.modal.keys[el.dataset.aiKey] = el.value;
   if (el.dataset.pf) state.previewForm[el.dataset.pf] = el.value;
   if (el.dataset.focus === "avatar-prompt" && state.modal) state.modal.avatarPrompt = el.value;
   if (el.dataset.focus === "avatar-from" && state.modal) state.modal.fromPhoto = el.checked;
 });
+
+// <details> não dispara "input"; guarda se está aberto para sobreviver às renderizações.
+document.addEventListener(
+  "toggle",
+  (e) => {
+    if (e.target.dataset?.toggle === "llm-manual") state.llm.manual = e.target.open;
+  },
+  true,
+);
 
 // ---------- ações ----------
 const actions = {
@@ -784,6 +901,25 @@ const actions = {
   },
   async reveal({ path }) {
     await api("POST", "/api/reveal", { path });
+  },
+  async "clone-project"() {
+    const name = prompt("Nome do novo projeto:", `${state.project.name} (cópia)`);
+    if (name === null) return;
+    await saveNow();
+    const copy = await api("POST", `/api/projects/${state.project.id}/clone`, { name });
+    await loadProjects();
+    await openProject(copy.id, copy);
+    toast("Projeto clonado. Escolha a pasta de saída da cópia antes de gerar.");
+  },
+  async "clear-scenes"() {
+    const n = state.project.scenes.length;
+    if (!confirm(`Apagar as ${n} cenas de "${state.project.name}"? Personagens, fundos e configurações ficam. Os vídeos já gerados continuam na pasta de saída.`)) return;
+    await saveNow();
+    state.project = await api("DELETE", `/api/projects/${state.project.id}/scenes`);
+    state.sceneId = null;
+    await loadProjects();
+    render();
+    toast(`${n} cena(s) apagada(s).`);
   },
   async "delete-project"() {
     if (!confirm(`Excluir o projeto "${state.project.name}"? Os vídeos já gerados continuam na pasta de saída.`)) return;
@@ -961,6 +1097,12 @@ const actions = {
   async "generate-missing"() {
     await generate({ missing: true });
   },
+  async "generate-all"() {
+    await generateAll({ missing: false });
+  },
+  async "generate-all-missing"() {
+    await generateAll({ missing: true });
+  },
   async "generate-block"({ id }) {
     await generate({ only: id });
   },
@@ -1023,6 +1165,41 @@ const actions = {
     state.modal = { type: "llm" };
     render();
     refreshLlmText();
+    loadAi().catch(fail);
+  },
+  "open-ai-keys"() {
+    state.modal = { type: "ai-keys", keys: {}, back: state.modal?.type === "llm" ? "llm" : null };
+    render();
+  },
+  "close-ai-keys"() {
+    state.modal = state.modal?.back ? { type: state.modal.back } : null;
+    render();
+  },
+  async "save-ai-keys"() {
+    const keys = Object.fromEntries(Object.entries(state.modal.keys).filter(([, v]) => v.trim()));
+    if (Object.keys(keys).length) state.ai.settings = await api("PUT", "/api/ai", { keys });
+    actions["close-ai-keys"]();
+    await loadAi({ refresh: true });
+    if (Object.keys(keys).length) toast(state.ai.errors.length ? "Chave salva, mas o provedor recusou. Veja a mensagem no assistente." : "Chave salva.", state.ai.errors.length ? "error" : "info");
+  },
+  async "remove-ai-key"({ id }) {
+    state.ai.settings = await api("PUT", "/api/ai", { keys: { [id]: "" } });
+    await loadAi({ refresh: true });
+  },
+  async "refresh-ai-models"() {
+    await loadAi({ refresh: true });
+  },
+  async "ai-generate"() {
+    const l = state.llm;
+    const [provider, ...rest] = l.model.split(":");
+    if (!provider) return toast("Escolha o modelo.", "error");
+    if (!l.fullScript.trim()) return toast("Cole o roteiro completo.", "error");
+    await saveNow();
+    l.task = await api("POST", `/api/projects/${state.project.id}/ai-script`, { script: l.fullScript, seconds: Number(l.fullSeconds) || null, provider, model: rest.join(":") });
+    render();
+  },
+  async "ai-cancel"() {
+    if (state.llm.task) await api("POST", `/api/ai-script/${state.llm.task.id}/cancel`, {});
   },
   async "copy-llm"() {
     await copyText(state.llm.text);
@@ -1052,6 +1229,7 @@ const actions = {
       state.sceneId = r.sceneIds[0];
       state.tab = "scenes";
       state.modal = null;
+      if (state.llm.task) state.ai.imported.add(state.llm.task.id);
       state.llm = { ...state.llm, script: "", result: null, error: null, target: "" };
       await loadProjects();
       render();
@@ -1062,6 +1240,7 @@ const actions = {
     }
   },
   "close-modal"() {
+    if (state.modal?.type === "ai-keys") return actions["close-ai-keys"]();
     state.modal = null;
     render();
   },
@@ -1129,6 +1308,9 @@ const changes = {
   "llm-target"(el) {
     state.llm.target = el.value;
   },
+  "llm-model"(el) {
+    state.llm.model = el.value;
+  },
 };
 
 async function generate(opts) {
@@ -1143,6 +1325,23 @@ async function generate(opts) {
   }
   await api("POST", `/api/projects/${state.project.id}/scenes/${scene.id}/generate`, opts);
   toast("Na fila de geração.");
+}
+
+async function generateAll({ missing }) {
+  await saveNow();
+  const p = state.project;
+  if (!p.outputDir) {
+    actions.tab({ tab: "overview" });
+    return toast("Escolha a pasta de saída do projeto antes de gerar.", "error");
+  }
+  const empty = p.scenes.flatMap((s, si) =>
+    s.blocks.map((b, bi) => (!b.prompt.trim() && (!missing || !b.selectedTakeId) ? `cena ${si + 1} (${s.title}), bloco ${bi + 1}` : null)).filter(Boolean),
+  );
+  if (empty.length) return toast(`Blocos sem prompt: ${empty.slice(0, 5).join("; ")}${empty.length > 5 ? ` e mais ${empty.length - 5}` : ""}.`, "error");
+  const r = await api("POST", `/api/projects/${p.id}/generate-all`, { missing });
+  actions.tab({ tab: "queue" });
+  const skipped = r.skipped.length ? ` ${r.skipped.length} pulada(s): ${r.skipped.map((x) => `${x.title} (${x.reason})`).join("; ")}` : "";
+  toast(`${r.added.length} cena(s) na fila.${skipped}`);
 }
 
 document.addEventListener("click", async (e) => {
@@ -1162,6 +1361,46 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ---------- carregamento ----------
+// Chaves cadastradas e modelos disponíveis em cada provedor.
+async function loadAi({ refresh = false } = {}) {
+  state.ai.loading = true;
+  render();
+  try {
+    state.ai.settings = await api("GET", "/api/ai");
+    const r = await api("GET", `/api/ai/models${refresh ? "?refresh=1" : ""}`);
+    state.ai.models = r.models;
+    state.ai.errors = r.errors;
+    const saved = state.ai.settings.model;
+    const has = (v) => r.models.some((m) => `${m.provider}:${m.id}` === v);
+    if (!has(state.llm.model)) state.llm.model = saved && has(`${saved.provider}:${saved.id}`) ? `${saved.provider}:${saved.id}` : "";
+    if (state.project && !state.llm.task) {
+      const tasks = await api("GET", `/api/projects/${state.project.id}/ai-script`);
+      if (tasks[0] && !state.ai.imported.has(tasks[0].id)) applyAiTask(tasks[0]);
+    }
+  } finally {
+    state.ai.loading = false;
+    render();
+  }
+}
+
+function applyAiTask(task) {
+  const l = state.llm;
+  const before = l.task?.status;
+  l.task = task;
+  if (task.status === "complete" && before !== "complete") {
+    l.script = task.text;
+    l.target = "";
+    actions["llm-validate"]().catch(fail);
+    toast("Roteiro gerado. Revise e importe.");
+  }
+  // Resposta que não passou na validação: fica no campo para corrigir à mão.
+  if (task.status === "error" && task.text && before !== "error") {
+    l.script = task.text;
+    l.result = null;
+    l.error = null;
+  }
+}
+
 async function loadProjects() {
   state.projects = await api("GET", "/api/projects");
   renderSidebar();
@@ -1173,7 +1412,7 @@ async function openProject(id, data) {
   state.sceneId = state.project.scenes[0]?.id ?? null;
   state.modal = null;
   state.previewForm = { sceneId: "", backgroundId: "", strength: 0.6, withCharacters: true, prompt: "" };
-  state.llm = { request: "", seconds: "", inline: false, text: "", fileName: "", script: "", result: null, error: null, target: "" };
+  state.llm = newLlmState();
   if (!["overview", "characters", "backgrounds", "scenes", "previews", "queue"].includes(state.tab)) state.tab = "overview";
   try {
     localStorage.setItem("takes:last", id);
@@ -1213,6 +1452,20 @@ function connectEvents() {
       structure = next;
       render();
     } else patchProgress();
+  });
+  es.addEventListener("ai", (e) => {
+    const task = JSON.parse(e.data);
+    if (task.projectId !== state.project?.id) return;
+    const changed = task.status !== state.llm.task?.status || task.id !== state.llm.task?.id;
+    applyAiTask(task);
+    if (state.modal?.type !== "llm") {
+      if (changed && task.status === "error") toast(`Roteiro automático: ${task.error}`, "error");
+      return;
+    }
+    // Durante a geração só a linha de progresso muda, para não atrapalhar a digitação.
+    const line = document.querySelector(".ai-progress");
+    if (!changed && line && task.status === "running") line.innerHTML = aiProgress(task);
+    else render();
   });
   es.addEventListener("project", (e) => {
     const { id } = JSON.parse(e.data);

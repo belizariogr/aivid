@@ -132,6 +132,23 @@ test("scene renders with extend, last-frame and cut continuity", { skip: !ffmpeg
   assert.equal(total, (7 + 5 + 3 + 4) * 24);
 });
 
+test("a recreated scene does not overwrite videos already in its folder", { skip: !ffmpeg && "ffmpeg ausente" }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const queue = new JobQueue({ store, ltx: new FakeLtx(root) });
+  const p = store.create("X");
+  const scene = (id) => [{ id, title: "Abertura", blocks: [{ id: `${id}-b`, prompt: "a", duration: 2, continuity: "cut" }] }];
+  store.edit(p.id, { outputDir: path.join(root, "out"), scenes: scene("s1") });
+  queue.addScene(p.id, "s1");
+  await waitIdle(queue);
+  store.edit(p.id, { scenes: scene("s2") });
+  queue.addScene(p.id, "s2");
+  await waitIdle(queue);
+  const folder = path.join(root, "out", "cena-01-abertura");
+  assert.ok(fs.existsSync(path.join(folder, "bloco-01.mp4")));
+  assert.ok(selectedTake(store.get(p.id).scenes[0].blocks[0]).file.endsWith("bloco-01_take-2.mp4"));
+});
+
 test("continuation requires the previous block", { skip: !ffmpeg && "ffmpeg ausente" }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
   const store = new Store(path.join(root, "lib"));
