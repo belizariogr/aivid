@@ -11,12 +11,13 @@ import { Store, findScene, selectedTake, blockState, slug, newId, normalizeChara
 import { LtxClient } from "./ltx.js";
 import { JobQueue, sceneFolder } from "./jobs.js";
 import { buildBrief, userPrompt, parseScript } from "./llm.js";
+import { AiSettings, ScriptWriter } from "./ai.js";
 import * as media from "./media.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, "..", "public");
 
-export function createApp({ root, ltx = new LtxClient(), mediaLib = media } = {}) {
+export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetchImpl = fetch } = {}) {
   const store = new Store(root);
   const clients = new Set();
   const broadcast = (event, data) => {
@@ -30,6 +31,8 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media } = {}
     file: path.join(root, "jobs.json"),
     onChange: (jobs) => broadcast("jobs", jobs),
   });
+  const aiSettings = new AiSettings(path.join(root, "ai.json"));
+  const writer = new ScriptWriter({ settings: aiSettings, store, fetchImpl, onChange: (task) => broadcast("ai", task) });
   let onShutdown = () => {};
   const originalSave = store.save.bind(store);
   store.save = (project) => {
@@ -170,6 +173,7 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media } = {}
   route("POST", "/api/projects/:id/scenes/:sid/generate", ({ id, sid, body }) =>
     queue.addScene(id, sid, { from: Number(body.from) || 0, only: body.only || null, missing: Boolean(body.missing) }),
   );
+  route("POST", "/api/projects/:id/generate-all", ({ id, body }) => queue.addAllScenes(id, { missing: Boolean(body.missing) }));
   route("GET", "/api/projects/:id/scenes/:sid/playlist", ({ id, sid }) => {
     const project = store.get(id);
     const scene = findScene(project, sid);
@@ -241,6 +245,21 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media } = {}
     });
     return { project: view(updated), sceneIds: scenes.map((s) => s.id), warnings };
   });
+
+  // Chaves de API (ficam só neste Mac, fora dos projetos) e roteiro gerado automaticamente.
+  route("GET", "/api/ai", () => aiSettings.view());
+  route("PUT", "/api/ai", ({ body }) => {
+    const view = aiSettings.update(body);
+    if (body.keys) writer.models.clear();
+    return view;
+  });
+  route("GET", "/api/ai/models", ({ query }) => writer.listModels({ refresh: query.get("refresh") === "1" }));
+  route("GET", "/api/projects/:id/ai-script", ({ id }) => writer.list(id));
+  route("POST", "/api/projects/:id/ai-script", ({ id, body }) => {
+    if (body.provider && body.model) aiSettings.update({ model: { provider: body.provider, id: body.model } });
+    return writer.start(id, body);
+  });
+  route("POST", "/api/ai-script/:tid/cancel", ({ tid }) => writer.cancel(tid));
 
   route("POST", "/api/pick-folder", async ({ body }) => {
     const start = body.start && fs.existsSync(body.start) ? body.start : path.join(os.homedir(), "Movies");

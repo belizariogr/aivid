@@ -70,3 +70,24 @@ test("project lifecycle, photo upload, script import and media guard", async () 
     s.close();
   }
 });
+
+test("queues every scene of the project at once", async () => {
+  const s = await start();
+  try {
+    const p = await (await s.call("POST", "/api/projects", { name: "Longa" })).json();
+    const none = await s.call("POST", `/api/projects/${p.id}/generate-all`, {});
+    assert.equal(none.status, 409);
+    const script = JSON.stringify({
+      scenes: [
+        { title: "Um", blocks: [{ duration: 5, prompt: "A." }, { duration: 5, prompt: "B." }] },
+        { title: "Dois", blocks: [{ duration: 8, prompt: "C." }] },
+      ],
+    });
+    await s.call("POST", `/api/projects/${p.id}/import-script`, { text: script });
+    const r = await (await s.call("POST", `/api/projects/${p.id}/generate-all`, {})).json();
+    assert.deepEqual(r.added.map((j) => j.title), ["Um — blocos 1–2", "Dois — bloco 1"]);
+    assert.deepEqual(r.added.map((j) => j.blockIds.length), [2, 1]);
+  } finally {
+    s.close();
+  }
+});

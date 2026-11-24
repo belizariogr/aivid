@@ -51,6 +51,7 @@ Se o app fechar sozinho ou for encerrado à força, vale a primeira opção. Se 
 - **Pré-prompt**: instruções gerais (estilo, época, lente, luz, regras) que entram antes de todo prompt de vídeo e imagem.
 - **Prompt negativo**, resolução, proporção, FPS, seed, áudio e **contexto da continuação** (segundos do bloco anterior enviados ao LTX).
 - **Pasta de saída**: escolhida pelo seletor do macOS ou digitada.
+- **Gerar todas as cenas**: põe todas as cenas na fila do LTX, em ordem, e abre a aba Fila. **Só os pendentes** gera apenas os blocos que ainda não têm vídeo.
 
 ### Personagens
 Foto (envio, enquadramento, zoom, rotação, espelhamento, brilho, contraste e saturação), geração de foto por IA a partir do perfil (opcionalmente partindo da foto atual) e perfil: nome, papel, aparência, figurino, personalidade, voz e notas. **Aparência e figurino entram no prompt** dos blocos em que o personagem aparece. Personalidade e voz servem para você e para a LLM.
@@ -78,6 +79,20 @@ Gere imagens estáticas para ver como o ambiente vai ficar antes de gerar o víd
 **Assistir cena** toca todos os blocos em sequência, sem pausa entre eles, com uma linha do tempo por bloco. O modo **Só as transições** toca apenas o fim de cada bloco e o começo do seguinte (±1,5 s, 2 s ou 3 s) para conferir as emendas. **Exportar unida** gera `cena-NN-…-completa.mp4` para conferência. Os blocos continuam separados.
 
 ### Roteiro com LLM
+
+#### Automático, com chave de API
+1. Em **Chaves de API…**, cadastre a chave do Claude (Anthropic) e/ou da OpenAI (ChatGPT/Codex). Pode cadastrar as duas.
+2. Escolha o modelo. A lista vem da API de cada provedor com chave cadastrada (na OpenAI, só os modelos de texto).
+3. Cole o **roteiro completo** (cenas, ações, falas) e, se quiser, a duração total, e clique em **Gerar cenas**. A LLM divide o roteiro em cenas e cada cena em blocos de até 20 s, usando os personagens e fundos do projeto.
+4. O resultado aparece em **Revise e importe**: confira e importe como novas cenas.
+
+- As chaves ficam em `~/Library/Application Support/Takes/ai.json` (permissão só do seu usuário) e valem para todos os projetos. A interface nunca recebe a chave, só os últimos caracteres.
+- A geração roda no servidor e continua se você fechar o assistente. Se a resposta não passar na validação (bloco acima de 20 s, personagem inexistente, JSON quebrado), o Takes devolve os problemas à LLM e pede a correção uma vez. Se ainda falhar, a resposta fica no campo para você ajustar à mão.
+- Claude: streaming com pensamento adaptativo e esforço `high` nos modelos que suportam. Nos modelos com classificadores de segurança (Opus 5.5, Opus 5, Sonnet 5.5, Fable 5.1/5.2) o pedido vai com `fallbacks: "default"`, e a Anthropic refaz a resposta em outro modelo se houver recusa.
+- OpenAI: Responses API com streaming e `store: false`.
+- Cada geração é cobrada na sua conta do provedor.
+
+#### Manual, em outra LLM
 1. **Baixe o arquivo do projeto** (`<projeto>.takes-llm.json`). Ele traz o pré-prompt, os personagens e fundos com ids, as cenas existentes, as regras do LTX e o formato de resposta.
 2. Descreva a cena e a duração desejada e **copie as instruções**. Cole na LLM junto com o arquivo. Se a LLM não aceita anexos, marque "Incluir o arquivo no texto".
 3. **Cole a resposta** ou abra o `.json`, valide e importe como nova cena ou substituindo uma existente. A importação aceita JSON puro ou dentro de bloco de código, resolve personagens e fundos por id ou nome e recusa blocos acima de 20 s com a lista dos problemas.
@@ -139,6 +154,7 @@ server/media.js    FFmpeg/FFprobe
 server/store.js    projetos em JSON
 server/prompts.js  montagem dos prompts
 server/llm.js      arquivo para LLM e importação do roteiro
+server/ai.js       chaves de API, modelos e roteiro automático (Claude e OpenAI)
 public/            interface (JS puro, sem build)
 mac/               app nativo (Swift), ícone e build
 ```

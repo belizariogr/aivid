@@ -130,6 +130,22 @@ export class JobQueue {
     });
   }
 
+  // Põe na fila todas as cenas do projeto, em ordem. Pula as que já estão na fila ou não têm o que gerar.
+  addAllScenes(projectId, { missing = false } = {}) {
+    const project = this.store.get(projectId);
+    const added = [];
+    const skipped = [];
+    for (const scene of project.scenes) {
+      try {
+        added.push(this.addScene(projectId, scene.id, { missing }));
+      } catch (error) {
+        skipped.push({ sceneId: scene.id, title: scene.title, reason: error.message });
+      }
+    }
+    if (!added.length) throw Object.assign(new Error(missing ? "Nenhuma cena tem blocos pendentes." : "Nenhuma cena para gerar."), { status: 409, details: skipped.map((x) => `${x.title}: ${x.reason}`) });
+    return { added, skipped };
+  }
+
   async cancel(id) {
     const job = this.jobs.find((j) => j.id === id);
     if (!job) throw new Error("Tarefa não encontrada.");
