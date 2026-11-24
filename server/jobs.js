@@ -29,10 +29,17 @@ export function startImage(project, scene) {
   return null;
 }
 
+// Erro que não se resolve gerando de novo (falta algo que só o usuário pode corrigir).
+const fatal = (message) => Object.assign(new Error(message), { retry: false });
+
 function requireOutput(project) {
-  if (!project.outputDir) throw new Error("Escolha a pasta de saída do projeto antes de gerar.");
-  fs.mkdirSync(project.outputDir, { recursive: true });
-  fs.accessSync(project.outputDir, fs.constants.W_OK);
+  if (!project.outputDir) throw fatal("Escolha a pasta de saída do projeto antes de gerar.");
+  try {
+    fs.mkdirSync(project.outputDir, { recursive: true });
+    fs.accessSync(project.outputDir, fs.constants.W_OK);
+  } catch (error) {
+    throw Object.assign(error, { retry: false });
+  }
 }
 
 const ACTIVE = ["queued", "running"];
@@ -51,6 +58,8 @@ export class JobQueue {
     this.running = null;
     this.pollMs = 1500;
     this.idlePoll = 3000;
+    // Pausa antes de cada nova tentativa de um bloco que falhou; o tamanho da lista é o número de novas tentativas.
+    this.retryDelays = [5000, 15000];
     this.load();
   }
 
@@ -361,21 +370,65 @@ export class JobQueue {
       }
       job.current = { index, n: job.done.length + 1, total };
       job.progress = Math.round((job.done.length / total) * 100);
-      const ok = await this.renderBlock(job, project, scene, index);
+      const ok = await this.renderBlockWithRetry(job, blockId);
       if (!ok) return;
     }
   }
 
-  async renderBlock(job, project, scene, index) {
+  // Um bloco que falha é gerado de novo algumas vezes antes de a tarefa parar com erro.
+  // Não repete cancelamentos nem erros que só o usuário resolve (pasta de saída, bloco anterior ausente).
+  async renderBlockWithRetry(job, blockId) {
+    const attempts = this.retryDelays.length + 1;
+    for (let attempt = 1; ; attempt++) {
+      const project = this.store.get(job.projectId);
+      const scene = findScene(project, job.sceneId);
+      const index = scene.blocks.findIndex((b) => b.id === blockId);
+      if (index < 0) {
+        job.done.push(blockId); // bloco removido enquanto esperava a nova tentativa
+        return true;
+      }
+      job.current = { ...job.current, index, attempt, attempts };
+      try {
+        return await this.renderBlock(job, project, scene, index, { attempt, attempts });
+      } catch (error) {
+        const final = attempt >= attempts || error.retry === false || error.code === "ABORTED" || job.cancelRequested || this.stopped;
+        if (final) {
+          if (attempt > 1 && error.retry !== false && error.code !== "ABORTED" && !job.cancelRequested)
+            error.message = `Bloco ${index + 1} falhou ${attempt} vezes. Último erro: ${error.message}`;
+          throw error;
+        }
+        job.inflight = null;
+        job.ltxGenerationId = null;
+        const delay = this.retryDelays[attempt - 1];
+        job.phase = `Bloco ${index + 1} falhou (${error.message}). Tentando de novo${delay >= 1000 ? ` em ${Math.round(delay / 1000)} s` : ""}…`;
+        this.changed();
+        await this.pause(job, delay);
+        if (job.cancelRequested) return false;
+      }
+    }
+  }
+
+  // Espera que termina antes se a tarefa for cancelada.
+  pause(job, ms) {
+    if (!ms) return Promise.resolve();
+    return new Promise((resolve) => {
+      const signal = job.abort?.signal;
+      const done = () => (clearTimeout(t), signal?.removeEventListener("abort", done), resolve());
+      const t = setTimeout(done, ms);
+      signal?.addEventListener("abort", done, { once: true });
+    });
+  }
+
+  async renderBlock(job, project, scene, index, { attempt = 1, attempts = 1 } = {}) {
     requireOutput(project);
     const block = scene.blocks[index];
     const s = project.settings;
     const prev = index > 0 ? selectedTake(scene.blocks[index - 1]) : null;
     const mode = index === 0 ? "start" : block.continuity;
     if ((mode === "continue" || mode === "frame") && !prev)
-      throw new Error(`O bloco ${index} ainda não foi gerado. Gere os blocos anteriores primeiro.`);
+      throw fatal(`O bloco ${index} ainda não foi gerado. Gere os blocos anteriores primeiro.`);
     if ((mode === "continue" || mode === "frame") && !fs.existsSync(prev.file))
-      throw new Error(`O vídeo do bloco ${index} não está mais em ${prev.file}.`);
+      throw fatal(`O vídeo do bloco ${index} não está mais em ${prev.file}.`);
 
     const folder = sceneFolder(project, scene);
     const work = path.join(folder, ".trabalho");
@@ -386,7 +439,7 @@ export class JobQueue {
     while (fs.existsSync(path.join(folder, `${baseName(takeNo)}.mp4`))) takeNo++;
     const base = baseName(takeNo);
     const signal = job.abort.signal;
-    const label = `Bloco ${index + 1} de ${scene.blocks.length}`;
+    const label = `Bloco ${index + 1} de ${scene.blocks.length}${attempt > 1 ? ` (tentativa ${attempt} de ${attempts})` : ""}`;
     const inflight = {
       type: "block",
       blockId: block.id,
