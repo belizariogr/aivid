@@ -449,7 +449,7 @@ test("a cut can open from an image generated for it, reused by later renders", {
         title: "Portão",
         blocks: [
           { id: "b1", prompt: "Wide, she opens the gate", duration: 2 },
-          { id: "b2", prompt: "Reverse angle", duration: 2, continuity: "cut", state: "The gate stands wide open.", opening: "Low angle from inside the square, the open gate behind her.", start: { kind: "keyframe", ref: { kind: "block", id: "b1" } } },
+          { id: "b2", prompt: "Reverse angle", duration: 2, continuity: "cut", currentState: "The gate stands wide open.", opening: "Low angle from inside the square, the open gate behind her.", start: { kind: "keyframe", ref: { kind: "block", id: "b1" } } },
         ],
       },
     ],

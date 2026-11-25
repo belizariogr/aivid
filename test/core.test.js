@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Store, mergeEdit, newProject, blockState, normalizeSettings } from "../server/store.js";
-import { parseScript, extractJson, buildBrief, userPrompt, fullScriptRequest, SCRIPT_FORMAT } from "../server/llm.js";
+import { parseScript, extractJson, buildBrief, fullScriptRequest, SCRIPT_FORMAT } from "../server/llm.js";
 import { videoPrompt, imageSize, blockBackground } from "../server/prompts.js";
 import { renderDuration } from "../server/ltx.js";
 import { latentFrames } from "../server/media.js";
@@ -149,7 +149,7 @@ test("parseScript reads generated openings, state, scene starts and checks dialo
   };
   const { scenes } = parseScript(p, script, { strict: true });
   assert.deepEqual(scenes[0].start, { kind: "previous", id: null });
-  assert.equal(scenes[0].blocks[0].state, "The door stands open.");
+  assert.equal(scenes[0].blocks[0].currentState, "The door stands open.");
   assert.deepEqual(scenes[0].blocks[1].start, { kind: "keyframe", id: null, ref: { kind: "block", id: scenes[0].blocks[0].id } });
   assert.equal(scenes[0].blocks[1].opening, "Close-up of Ana by the open door.");
   assert.deepEqual(scenes[1].start, { kind: "keyframe", id: null, ref: { kind: "none", id: null } });
@@ -196,17 +196,15 @@ test("a cut that opens from another background changes the setting from then on"
   assert.match(videoPrompt(p, scene, scene.blocks[2], { mode: "continue" }), /door wide open/);
 });
 
-test("brief and user prompt describe the project", () => {
+test("the brief describes the project", () => {
   const p = sample();
   const brief = buildBrief(p);
   assert.equal(brief.project.characters[0].name, "Ana");
   assert.equal(brief.project.characters[0].photo, undefined);
   assert.equal(brief.responseFormat.example.format, SCRIPT_FORMAT);
-  const text = userPrompt(p, { request: "Ana espera", seconds: 60, fileName: "t.json" });
-  assert.match(text, /t\.json/);
-  assert.match(text, /60 segundos/);
-  const inline = userPrompt(p, { request: "x", inline: true, brief });
-  assert.match(inline, /```json/);
+  const { system, user } = fullScriptRequest(p, { script: "Ana espera.", seconds: 60 });
+  assert.match(system, /same language as the script/);
+  assert.match(user, /about 60 seconds/);
 });
 
 test("video prompt stacks pre-prompt, setting, cast and action", () => {

@@ -47,11 +47,6 @@ test("project lifecycle, photo upload, script import and media guard", async () 
     const outside = await fetch(`${s.base}/media?path=${encodeURIComponent("/etc/hosts")}`);
     assert.equal(outside.status, 404);
 
-    const brief = await fetch(`${s.base}/api/projects/${p.id}/llm-brief`);
-    assert.match(brief.headers.get("content-disposition"), /curta\.takes-llm\.json/);
-    const briefData = await brief.json();
-    assert.equal(briefData.project.characters[0].id, cid);
-
     const script = JSON.stringify({ format: "takes.scene-script", version: 1, scene: { title: "Chegada", characterIds: ["Ana"], blocks: [{ duration: 10, prompt: "Ana walks in." }, { duration: 20, prompt: "She waits." }] } });
     const check = await (await s.call("POST", `/api/projects/${p.id}/import-script`, { text: script, validateOnly: true })).json();
     assert.equal(check.scenes[0].blocks.length, 2);
@@ -60,11 +55,15 @@ test("project lifecycle, photo upload, script import and media guard", async () 
     assert.deepEqual(imported.project.scenes[0].characterIds, [cid]);
     assert.equal(imported.project.scenes[0].blocks[0].state, "empty");
 
+    // Substituir todas as cenas troca a lista inteira.
+    const replaced = await (await s.call("POST", `/api/projects/${p.id}/import-script`, { text: script, mode: "replace" })).json();
+    assert.equal(replaced.project.scenes.length, 1);
+
     const bad = await s.call("POST", `/api/projects/${p.id}/import-script`, { text: '{"scene":{"blocks":[{"duration":30,"prompt":"x"}]}}' });
     assert.equal(bad.status, 422);
     assert.match((await bad.json()).error, /20s/);
 
-    const gen = await s.call("POST", `/api/projects/${p.id}/scenes/${imported.sceneIds[0]}/export`, {});
+    const gen = await s.call("POST", `/api/projects/${p.id}/scenes/${replaced.sceneIds[0]}/export`, {});
     assert.equal(gen.status, 409);
   } finally {
     s.close();
@@ -160,4 +159,30 @@ test("saves a frame of a take as a preview and undoes a continuity review", asyn
   } finally {
     s.close();
   }
+});
+
+test("the block status the UI receives never overwrites the block's current state", async () => {
+  const s = await start();
+  try {
+    const p = await (await s.call("POST", "/api/projects", { name: "Estado" })).json();
+    await s.call("PUT", `/api/projects/${p.id}`, { scenes: [{ id: "s", title: "C", blocks: [{ id: "b", prompt: "a", currentState: "The gate stands open." }] }] });
+    // A interface devolve o projeto como recebeu, com `state` = status do bloco.
+    const seen = await (await fetch(`${s.base}/api/projects/${p.id}`)).json();
+    assert.equal(seen.scenes[0].blocks[0].state, "empty");
+    const saved = await (await s.call("PUT", `/api/projects/${p.id}`, { scenes: seen.scenes })).json();
+    assert.equal(saved.scenes[0].blocks[0].currentState, "The gate stands open.");
+    assert.equal(saved.scenes[0].blocks[0].state, "empty");
+  } finally {
+    s.close();
+  }
+});
+
+test("projects saved with the old state field are migrated on load", async () => {
+  const { Store } = await import("../server/store.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-mig-"));
+  const dir = path.join(root, "projects", "p1");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "project.json"), JSON.stringify({ id: "p1", name: "Velho", updatedAt: "x", settings: {}, characters: [], backgrounds: [], previews: [], scenes: [{ id: "s", blocks: [{ id: "a", state: "The gate is open." }, { id: "b", state: "empty" }] }] }));
+  const blocks = new Store(root).get("p1").scenes[0].blocks;
+  assert.deepEqual(blocks.map((b) => [b.currentState, "state" in b]), [["The gate is open.", false], [undefined, false]]);
 });

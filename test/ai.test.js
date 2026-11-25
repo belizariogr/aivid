@@ -38,7 +38,7 @@ function fakeApis(replies) {
     if (url.startsWith("https://api.anthropic.com/v1/models"))
       return Response.json({
         data: [
-          { id: "claude-opus-5-5", display_name: "Claude Opus 5.5", max_tokens: 128000, capabilities: { thinking: { types: { adaptive: { supported: true } } }, effort: { high: { supported: true } } } },
+          { id: "claude-opus-5-5", display_name: "Claude Opus 5.5", max_tokens: 128000, capabilities: { thinking: { types: { adaptive: { supported: true } } }, effort: { low: { supported: true }, medium: { supported: true }, high: { supported: true }, xhigh: { supported: true }, max: { supported: true } } } },
           { id: "claude-haiku-4-5", display_name: "Claude Haiku 4.5", max_tokens: 64000, capabilities: { thinking: { types: { adaptive: { supported: false } } }, effort: { high: { supported: false } } } },
         ],
       });
@@ -103,10 +103,12 @@ test("generates the full script with Claude, repairing an invalid first answer",
   const { calls, fetchImpl } = fakeApis([() => anthropicText("Aqui está:\n```json\n" + bad + "\n```"), () => anthropicText(good)]);
   const s = await start(fetchImpl);
   try {
-    await s.call("PUT", "/api/ai", { keys: { anthropic: "sk-ant-1" } });
+    await s.call("PUT", "/api/ai", { keys: { anthropic: "sk-ant-1" }, model: { provider: "anthropic", id: "claude-opus-5-5" }, effort: "xhigh", defaults: { resolution: "1080p", judge: true } });
     const p = (await s.call("POST", "/api/projects", { name: "Curta" })).data;
+    assert.equal(p.settings.resolution, "1080p", "projeto novo usa os padrões das Configurações");
+    assert.equal(p.settings.judge, true);
     await s.call("POST", `/api/projects/${p.id}/characters`, { name: "Ana" });
-    const started = await s.call("POST", `/api/projects/${p.id}/ai-script`, { script: "ANA entra no café. Depois sai.", seconds: 30, provider: "anthropic", model: "claude-opus-5-5" });
+    const started = await s.call("POST", `/api/projects/${p.id}/ai-script`, { script: "ANA entra no café. Depois sai.", seconds: 30 });
     assert.equal(started.status, 200);
     const task = await finished(s, p.id);
     assert.equal(task.status, "complete", task.error);
@@ -118,17 +120,22 @@ test("generates the full script with Claude, repairing an invalid first answer",
     assert.equal(sent[0].opts.headers["anthropic-beta"], "server-side-fallback-2026-07-01");
     assert.equal(sent[0].body.stream, true);
     assert.deepEqual(sent[0].body.thinking, { type: "adaptive", display: "summarized" });
-    assert.equal(sent[0].body.output_config.effort, "high");
+    assert.equal(sent[0].body.output_config.effort, "xhigh");
     assert.match(sent[0].body.system, /ANA|Ana/);
     assert.match(sent[0].body.messages[0].content, /<script>\nANA entra no café/);
     assert.match(sent[0].body.messages[0].content, /about 30 seconds/);
     assert.equal(sent[1].body.messages[1].role, "assistant");
     assert.match(sent[1].body.messages[2].content, /20s/);
 
-    const imported = await s.call("POST", `/api/projects/${p.id}/import-script`, { text: task.text });
-    assert.deepEqual(imported.data.project.scenes.map((x) => x.title), ["Chegada", "Saída"]);
+    // Importa sozinho quando a resposta passa na validação.
+    assert.equal(task.imported.scenes, 2);
+    assert.equal(task.imported.mode, "append");
+    const project = (await s.call("GET", `/api/projects/${p.id}`)).data;
+    assert.deepEqual(project.scenes.map((x) => x.title), ["Chegada", "Saída"]);
+    assert.deepEqual(task.imported.sceneIds, project.scenes.map((x) => x.id));
     const settings = await s.call("GET", "/api/ai");
     assert.deepEqual(settings.data.model, { provider: "anthropic", id: "claude-opus-5-5" });
+    assert.equal(settings.data.effort, "xhigh");
   } finally {
     s.close();
   }
@@ -141,9 +148,12 @@ test("generates with OpenAI and reports model errors", async () => {
   const { calls, fetchImpl } = fakeApis([() => openaiText(good), () => Response.json({ error: { message: "Incorrect API key" } }, { status: 401 })]);
   const s = await start(fetchImpl);
   try {
-    await s.call("PUT", "/api/ai", { keys: { openai: "sk-openai-1" } });
     const p = (await s.call("POST", "/api/projects", { name: "Rua" })).data;
-    await s.call("POST", `/api/projects/${p.id}/ai-script`, { script: "Uma rua vazia.", provider: "openai", model: "gpt-5.1-codex" });
+    const noModel = await s.call("POST", `/api/projects/${p.id}/ai-script`, { script: "x" });
+    assert.equal(noModel.status, 400);
+    assert.match(noModel.data.error, /Configurações/);
+    await s.call("PUT", "/api/ai", { keys: { openai: "sk-openai-1" }, model: { provider: "openai", id: "gpt-5.1-codex" } });
+    await s.call("POST", `/api/projects/${p.id}/ai-script`, { script: "Uma rua vazia.", mode: "replace" });
     const task = await finished(s, p.id);
     assert.equal(task.status, "complete", task.error);
     const sent = calls.find((c) => c.url.endsWith("/v1/responses"));
@@ -151,15 +161,16 @@ test("generates with OpenAI and reports model errors", async () => {
     assert.equal(sent.body.model, "gpt-5.1-codex");
     assert.equal(sent.body.input[0].role, "user");
     assert.match(sent.body.instructions, /takes\.scene-script/);
+    assert.equal(task.imported.mode, "replace");
 
-    await s.call("POST", `/api/projects/${p.id}/ai-script`, { script: "Outra rua.", provider: "openai", model: "gpt-5.1" });
+    await s.call("POST", `/api/projects/${p.id}/ai-script`, { script: "Outra rua." });
     const failed = await finished(s, p.id);
     assert.equal(failed.status, "error");
     assert.match(failed.error, /chave de API recusada/);
 
-    const noKey = await s.call("POST", `/api/projects/${p.id}/ai-script`, { script: "x", provider: "anthropic", model: "claude-opus-5-5" });
-    assert.equal(noKey.status, 400);
-    assert.match(noKey.data.error, /Cadastre a chave/);
+    // Um modelo sem chave não fica salvo.
+    const view = (await s.call("PUT", "/api/ai", { model: { provider: "anthropic", id: "claude-opus-5-5" } })).data;
+    assert.equal(view.model, null);
   } finally {
     s.close();
   }
@@ -234,7 +245,7 @@ test("the judge sees the take, the previous block and the character references",
     characterIds: ["teca"],
     blocks: [
       { id: "b1", prompt: "Teca opens the gate", duration: 6, continuity: "cut", takes: [{ id: "t1", file: file("t1.mp4") }], selectedTakeId: "t1" },
-      { id: "b2", prompt: "Teca walks in", state: "The gate is open.", duration: 4, continuity: "continue", characterIds: null, takes: [{ id: "t2", file: file("t2.mp4") }], selectedTakeId: "t2" },
+      { id: "b2", prompt: "Teca walks in", currentState: "The gate is open.", duration: 4, continuity: "continue", characterIds: null, takes: [{ id: "t2", file: file("t2.mp4") }], selectedTakeId: "t2" },
     ],
   };
   const replies = [JSON.stringify({ pass: false, score: 4, problems: ["O portão aparece fechado."], reason: "Estado errado." })];

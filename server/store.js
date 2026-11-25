@@ -43,7 +43,7 @@ export function normalizeSettings(s = {}) {
     seed: Number.isFinite(seed) && seed >= 0 ? seed % 2147483647 : null,
     audio: Boolean(s.audio),
     contextSeconds: Math.min(5, Math.max(1, Number(s.contextSeconds) || d.contextSeconds)),
-    // Revisão de continuidade com IA antes de cada bloco (usa o modelo escolhido em Chaves de API).
+    // Revisão de continuidade com IA antes de cada bloco (usa o modelo da revisão escolhido em Configurações).
     review: Boolean(s.review),
     // Juiz depois de cada bloco: reprovado, gera outro take até `retakes` vezes e fica com o melhor.
     judge: Boolean(s.judge),
@@ -101,8 +101,9 @@ export function normalizeBlock(b = {}, previous) {
     continuity: pick(plan.continuity, CONTINUITY, "continue"),
     start: keepKeyframe(normalizeCutStart(plan.start), previous?.start, str(plan.opening, 4000) === (previous?.opening ?? "")),
     note: str(plan.note, 2000),
-    // Estado do lugar e dos objetos que difere do fundo (em inglês); entra no prompt.
-    state: str(plan.state, 2000),
+    // Estado do lugar e dos objetos que difere do fundo (em inglês); entra no prompt. Não é o
+    // `state` que a interface recebe (Pronto, Não gerado…), calculado em blockState.
+    currentState: str(plan.currentState, 2000),
     // Descrição do quadro de abertura, usada quando a abertura é gerada pelo Z-Image.
     opening: str(plan.opening, 4000),
     review,
@@ -173,6 +174,20 @@ export function mergeEdit(project, input) {
   return next;
 }
 
+const BLOCK_STATUS = new Set(["empty", "ready", "stale", "missing"]);
+
+// Projetos salvos antes de `currentState` guardavam o estado do bloco em `state`, que a interface
+// sobrescrevia com o status do bloco. Mantém o texto que ainda for estado e descarta o status.
+export function migrateProject(project) {
+  for (const scene of project.scenes ?? [])
+    for (const block of scene.blocks ?? []) {
+      if (!("state" in block)) continue;
+      if (block.currentState === undefined && typeof block.state === "string" && !BLOCK_STATUS.has(block.state)) block.currentState = block.state;
+      delete block.state;
+    }
+  return project;
+}
+
 export class Store {
   constructor(root) {
     this.root = root;
@@ -183,7 +198,7 @@ export class Store {
     for (const entry of fs.readdirSync(this.dir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       try {
-        const p = JSON.parse(fs.readFileSync(path.join(this.dir, entry.name, "project.json"), "utf8"));
+        const p = migrateProject(JSON.parse(fs.readFileSync(path.join(this.dir, entry.name, "project.json"), "utf8")));
         this.projects.set(p.id, p);
       } catch {
         /* pasta incompleta; ignora */
@@ -222,8 +237,10 @@ export class Store {
     return project;
   }
 
-  create(name) {
-    return this.save(newProject(name));
+  create(name, settings = null) {
+    const project = newProject(name);
+    if (settings) project.settings = normalizeSettings(settings);
+    return this.save(project);
   }
 
   // Altera o projeto mais recente em memória (evita sobrescrever o trabalho do gerador).

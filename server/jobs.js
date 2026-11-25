@@ -591,7 +591,7 @@ export class JobQueue {
         changed: r.changed,
         reason: r.reason,
         model: r.model,
-        before: r.changed ? { continuity: block.continuity, start: block.start, prompt: block.prompt, note: block.note, state: block.state ?? "", opening: block.opening ?? "" } : null,
+        before: r.changed ? { continuity: block.continuity, start: block.start, prompt: block.prompt, note: block.note, currentState: block.currentState ?? "", opening: block.opening ?? "" } : null,
       };
       this.store.update(job.projectId, (p) => {
         const b = findScene(p, job.sceneId).blocks.find((x) => x.id === blockId);

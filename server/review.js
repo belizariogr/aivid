@@ -1,4 +1,4 @@
-// Supervisão com visão, usando o modelo escolhido em Chaves de API:
+// Supervisão com visão, usando o modelo da revisão escolhido em Configurações:
 //  - review: antes de o LTX gerar um bloco, a LLM vê os quadros que o LTX realmente gerou, a imagem
 //    que o bloco vai usar e os fundos, e confirma ou ajusta continuidade, abertura, estado e prompt.
 //  - judge: depois do bloco, a LLM vê quadros do take, o fim do bloco anterior e as fotos dos
@@ -81,8 +81,9 @@ export class ContinuityReviewer {
     this.fetch = fetchImpl;
   }
 
-  // Modelo escolhido em Chaves de API, se houver chave para ele.
+  // Modelo da revisão e do juiz escolhido em Configurações (ou o do roteiro), se houver chave.
   model() {
+    if (this.settings.supervisor) return this.settings.supervisor();
     const m = this.settings.data.model;
     return m && this.settings.key(m.provider) ? m : null;
   }
@@ -111,7 +112,7 @@ export class ContinuityReviewer {
       continuity: i === 0 ? "opens the scene" : b.continuity,
       ...(i > 0 && b.continuity === "cut" ? { start: startLabel(scene, b) } : {}),
       ...(b.opening ? { opening: b.opening } : {}),
-      state: b.state || "",
+      state: b.currentState || "",
       prompt: b.prompt,
       note: b.note || "",
       rendered: Boolean(selectedTake(b)),
@@ -140,12 +141,12 @@ export class ContinuityReviewer {
   // Chama a LLM e valida a resposta; uma resposta inválida volta para ela corrigir uma vez.
   async askJson(system, parts, parse, signal) {
     const model = this.model();
-    if (!model) throw fail("escolha um modelo em Chaves de API");
+    if (!model) throw fail("escolha um modelo em Configurações");
     const resolved = await this.writer.resolveModel(model.provider, model.id);
     const key = this.settings.key(model.provider);
     const messages = [userMessage(model.provider, parts)];
     for (let attempt = 1; ; attempt++) {
-      const reply = await ask(model.provider, { key, model: resolved, system, messages, signal, fetchImpl: this.fetch, effort: "medium" });
+      const reply = await ask(model.provider, { key, model: resolved, system, messages, signal, fetchImpl: this.fetch, effort: this.settings.data.reviewEffort ?? "medium" });
       try {
         return { ...parse(extractJson(reply)), model: `${PROVIDERS[model.provider].name} · ${resolved.name || resolved.id}` };
       } catch (error) {
@@ -173,7 +174,7 @@ export class ContinuityReviewer {
     return m.parts;
   }
 
-  // Valida a resposta da revisão. Devolve { changed, block: { continuity, start, prompt, note, state, opening }, reason }.
+  // Valida a resposta da revisão. Devolve { changed, block: { continuity, start, prompt, note, currentState, opening }, reason }.
   parse(project, scene, index, data) {
     const errors = [];
     const block = scene.blocks[index];
@@ -204,13 +205,13 @@ export class ContinuityReviewer {
       start: continuity === "cut" ? start : block.start ?? { kind: "scene", id: null },
       prompt: text(data.prompt),
       note: typeof data.note === "string" ? data.note.trim() : block.note || "",
-      state: typeof data.state === "string" ? data.state.trim() : block.state || "",
+      currentState: typeof data.state === "string" ? data.state.trim() : block.currentState || "",
       opening: start.kind === "keyframe" ? text(data.opening) || block.opening || "" : block.opening || "",
     };
     const changed =
       next.continuity !== block.continuity ||
       next.prompt !== text(block.prompt) ||
-      next.state !== (block.state || "") ||
+      next.currentState !== (block.currentState || "") ||
       next.opening !== (block.opening || "") ||
       (continuity === "cut" && !same(next.start, block.start ?? { kind: "scene", id: null }));
     return { changed, block: next, reason: text(data.reason) };
@@ -232,7 +233,7 @@ export class ContinuityReviewer {
       [
         this.projectText(project, scene),
         `Block ${index + 1} of ${scene.blocks.length}, ${block.duration} s, continuity: ${mode}${index > 0 && block.continuity === "cut" ? ` (start: ${startLabel(scene, block)})` : ""}.`,
-        `State that must hold: ${block.state || "(nothing differs from the background)"}`,
+        `State that must hold: ${block.currentState || "(nothing differs from the background)"}`,
         `Prompt of the block: ${block.prompt}`,
         index > 0 ? `Previous block prompt: ${scene.blocks[index - 1].prompt}` : "",
       ]
@@ -271,7 +272,7 @@ export class ContinuityReviewer {
       [
         this.projectText(project, scene),
         `Planned opening of block ${index + 1}: ${block.opening || block.prompt}`,
-        `State that must show: ${block.state || "(nothing differs from the background)"}`,
+        `State that must show: ${block.currentState || "(nothing differs from the background)"}`,
       ].join("\n"),
     );
     const prev = index > 0 ? selectedTake(scene.blocks[index - 1]) : null;

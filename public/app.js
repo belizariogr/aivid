@@ -41,10 +41,7 @@ function toast(message, kind = "info") {
 const fail = (e) => toast(e.message, "error");
 
 // ---------- estado ----------
-const newLlmState = () => ({
-  request: "", seconds: "", inline: false, text: "", fileName: "", script: "", result: null, error: null, target: "",
-  fullScript: "", fullSeconds: "", model: "", task: null, manual: false,
-});
+const newLlmState = () => ({ fullScript: "", fullSeconds: "", mode: "append", film: false, task: null });
 const state = {
   projects: [],
   project: null,
@@ -54,7 +51,7 @@ const state = {
   ltx: null,
   modal: null, // { type, ... }
   llm: newLlmState(),
-  ai: { settings: null, models: [], errors: [], loading: false, imported: new Set() },
+  ai: { settings: null, models: [], errors: [], loading: false },
   previewForm: { sceneId: "", backgroundId: "", strength: 0.6, withCharacters: true, prompt: "" },
 };
 
@@ -135,7 +132,7 @@ function absorb(server) {
       b.selectedTakeId = x.selectedTakeId;
       b.state = x.state;
       // A revisão de continuidade com IA pode ter mudado o bloco no servidor.
-      if (x.review?.at && x.review.at !== b.review?.at) Object.assign(b, { review: x.review, continuity: x.continuity, start: x.start, prompt: x.prompt, note: x.note, state: x.state, opening: x.opening });
+      if (x.review?.at && x.review.at !== b.review?.at) Object.assign(b, { review: x.review, continuity: x.continuity, start: x.start, prompt: x.prompt, note: x.note, currentState: x.currentState, opening: x.opening });
       // A imagem de abertura gerada é gravada pelo servidor.
       if (x.start?.kind === "keyframe" && b.start?.kind === "keyframe") b.start.id = x.start.id;
     }
@@ -296,8 +293,15 @@ function projectView() {
     return `<button class="tab ${state.tab === id ? "active" : ""}" data-action="tab" data-tab="${id}">${label}${badge ? ` <span class="badge">${badge}</span>` : ""}</button>`;
   }).join("");
   const body = { overview, characters, backgrounds, scenes, previews, queue }[state.tab]();
+  const film = state.jobs.some((j) => j.kind === "film" && j.projectId === p.id && ["queued", "running"].includes(j.status));
   return `<div class="project-head">
-      <input class="title-input" data-bind="p.name" value="${esc(p.name)}" aria-label="Nome do projeto">
+      <div class="project-title-row">
+        <input class="title-input" data-bind="p.name" value="${esc(p.name)}" aria-label="Nome do projeto">
+        <div class="head-actions">
+          <button class="btn" data-action="open-llm" title="Cole o roteiro; a IA cria as cenas e os blocos e importa no projeto">✦ Gerar cenas com IA</button>
+          <button class="btn primary" data-action="generate-film" ${p.scenes.length && !film ? "" : "disabled"} title="Gera o que falta em todas as cenas, une o filme e escreve o relatório">${film ? "Filme na fila…" : "▶ Gerar filme"}</button>
+        </div>
+      </div>
       <div class="tabs">${tabs}</div>
     </div>
     <div class="tab-body">${body}</div>`;
@@ -305,12 +309,11 @@ function projectView() {
 
 const option = (value, label, current) => `<option value="${esc(value)}" ${String(value) === String(current) ? "selected" : ""}>${esc(label)}</option>`;
 
-function generateAllSummary(p) {
-  if (!p.scenes.length) return `<p class="hint">Crie ou importe cenas para gerar os vídeos.</p>`;
+function projectStats(p) {
   const blocks = p.scenes.flatMap((s) => s.blocks);
   const done = blocks.filter((b) => b.state === "ready").length;
   const seconds = p.scenes.reduce((n, s) => n + sceneSeconds(s), 0);
-  return `<p class="hint">Põe todas as cenas na fila do LTX, em ordem. ${p.scenes.length} ${p.scenes.length === 1 ? "cena" : "cenas"} · ${blocks.length} blocos · ${fmtTime(seconds)} de vídeo · ${done}/${blocks.length} prontos.</p>`;
+  return { scenes: p.scenes.length, blocks: blocks.length, done, seconds };
 }
 
 function filmResult(p) {
@@ -318,96 +321,118 @@ function filmResult(p) {
   if (!job) return "";
   if (["queued", "running"].includes(job.status)) return `<p class="hint">Filme completo na fila: ${esc(job.phase || "")}</p>`;
   if (job.status !== "complete" || !job.result) return job.error ? `<pre class="error">${esc(job.error)}</pre>` : "";
-  return `<div class="row">
+  return `<div class="row film-result">
+      <span class="muted small">Último filme: ${job.result.blocks} blocos unidos${job.result.attention ? ` · ${job.result.attention} ponto(s) para revisar` : ""}</span>
       ${job.result.file ? `<button class="btn small" data-action="reveal" data-path="${esc(job.result.file)}">Mostrar o filme</button>` : ""}
-      <button class="btn small ghost" data-action="reveal" data-path="${esc(job.result.report)}">Mostrar o relatório</button>
-      <small class="muted">${job.result.blocks} blocos unidos${job.result.attention ? ` · ${job.result.attention} ponto(s) para revisar` : ""}</small>
+      <button class="btn small ghost" data-action="reveal" data-path="${esc(job.result.report)}">Relatório</button>
     </div>`;
 }
 
-const ATTENTION_LABEL = { empty: "Não gerado", missing: "Arquivo ausente", stale: "Desatualizado", judge: "Reprovado" };
+const ATTENTION_LABEL = { empty: "não gerados", missing: "sem arquivo", stale: "desatualizados", judge: "reprovados pelo juiz" };
 
+// O que precisa de uma pessoa, agrupado por cena: problemas primeiro, blocos não gerados por último.
 function attentionPanel(p) {
   const items = p.attention ?? [];
-  if (!items.length) return "";
-  const shown = items.slice(0, 40);
-  return `<section class="card attention">
-      <h3>Precisa de você (${items.length})</h3>
-      <p class="hint">Blocos sem vídeo, desatualizados, sem arquivo ou reprovados pelo juiz mesmo depois dos retakes.</p>
-      <ul>${shown
-        .map(
-          (i) => `<li><button class="link" data-action="goto-block" data-scene="${i.sceneId}" data-id="${i.blockId}">Cena ${i.scene} · bloco ${i.block}</button>
-            <span class="pill">${ATTENTION_LABEL[i.kind] ?? i.kind}</span> <small class="muted">${esc(i.kind === "judge" ? i.message : i.sceneTitle)}</small></li>`,
-        )
-        .join("")}</ul>
-      ${items.length > shown.length ? `<small class="muted">e mais ${items.length - shown.length}.</small>` : ""}
-    </section>`;
+  if (!items.length) return `<p class="hint ok-line">✓ Nada pendente: todos os blocos estão gerados e aprovados.</p>`;
+  const counts = Object.entries(ATTENTION_LABEL)
+    .map(([kind, label]) => [kind, label, items.filter((i) => i.kind === kind).length])
+    .filter(([, , n]) => n);
+  const byScene = new Map();
+  for (const i of items) {
+    if (!byScene.has(i.sceneId)) byScene.set(i.sceneId, { scene: i.scene, title: i.sceneTitle, items: [] });
+    byScene.get(i.sceneId).items.push(i);
+  }
+  const rows = [...byScene.values()]
+    .map((g) => {
+      const problems = g.items.filter((i) => i.kind !== "empty");
+      const empty = g.items.filter((i) => i.kind === "empty");
+      const link = (i, text) => `<button class="link" data-action="goto-block" data-scene="${i.sceneId}" data-id="${i.blockId}">${text}</button>`;
+      return `<li>
+          <div class="att-scene">${link(g.items[0], `Cena ${g.scene}`)} <span class="muted">${esc(g.title)}</span></div>
+          <div class="att-items">
+            ${problems.map((i) => `<div>${link(i, `Bloco ${i.block}`)} <span class="pill ${i.kind}">${ATTENTION_LABEL[i.kind].replace(/s$/, "").replace("pelo juiz", "")}</span> <small class="muted">${esc(i.kind === "judge" ? i.message : "")}</small></div>`).join("")}
+            ${empty.length ? `<div class="muted small">${empty.length === g.items.length && empty.length > 1 ? "Nenhum bloco gerado" : `${empty.length === 1 ? "Bloco" : "Blocos"} ${empty.map((i) => i.block).join(", ")} não ${empty.length === 1 ? "gerado" : "gerados"}`}</div>` : ""}
+          </div>
+        </li>`;
+    })
+    .join("");
+  return `<div class="att-counts">${counts.map(([kind, label, n]) => `<span class="pill ${kind}">${n} ${label}</span>`).join("")}</div>
+    <ul class="attention-list">${rows}</ul>`;
 }
 
 function overview() {
   const p = state.project;
   const s = p.settings;
-  return `<div class="grid-2">
-    <section class="card">
-      <h3>Pré-prompt do projeto</h3>
-      <p class="hint">Instruções gerais que entram antes de <em>todo</em> prompt de vídeo e imagem: estilo visual, época, lente, luz, regras. Escreva em inglês para melhores resultados.</p>
-      <textarea data-bind="p.prePrompt" rows="8" placeholder="Ex.: Cinematic 35mm film look, warm golden-hour light, shallow depth of field, handheld camera, realistic textures…">${esc(p.prePrompt)}</textarea>
-      <h4>Prompt negativo</h4>
-      <textarea data-bind="p.negativePrompt" rows="2" placeholder="Ex.: blurry, distorted faces, text, watermark">${esc(p.negativePrompt)}</textarea>
-    </section>
-    <section class="card">
-      <h3>Pasta de saída</h3>
-      <p class="hint">Cada cena ganha uma subpasta com um MP4 por bloco (<code>bloco-01.mp4</code>, <code>bloco-02.mp4</code>…) para edição posterior. Novas versões viram <code>_take-2</code>, <code>_take-3</code>. As prévias ficam em <code>previas/</code>.</p>
-      <div class="path-row">
-        <code class="path">${esc(p.outputDir || "Nenhuma pasta escolhida")}</code>
-        <button class="btn" data-action="pick-output">Escolher…</button>
-        ${p.outputDir ? `<button class="btn ghost" data-action="reveal" data-path="${esc(p.outputDir)}">Abrir</button>` : ""}
+  const st = projectStats(p);
+  const model = state.ai.settings?.model;
+  const pct = st.blocks ? Math.round((st.done / st.blocks) * 100) : 0;
+  return `<div class="overview">
+    <section class="card status-card">
+      <div class="section-head">
+        <div>
+          <h3>Andamento</h3>
+          <p class="hint">${st.scenes ? `${st.scenes} ${st.scenes === 1 ? "cena" : "cenas"} · ${st.blocks} blocos · ${fmtTime(st.seconds)} de vídeo` : "Nenhuma cena ainda. Use “Gerar cenas com IA” para criar a partir do roteiro, ou crie na aba Cenas."}</p>
+        </div>
+        <div class="row">
+          <button class="btn" data-action="generate-all-missing" ${st.scenes ? "" : "disabled"} title="Em todas as cenas, gera só os blocos que ainda não têm vídeo">Gerar pendentes</button>
+          <button class="btn ghost" data-action="generate-all" ${st.scenes ? "" : "disabled"} title="Gera de novo todos os blocos de todas as cenas">Gerar tudo de novo</button>
+        </div>
       </div>
-      <input data-bind="p.outputDir" value="${esc(p.outputDir)}" placeholder="/Users/você/Movies/meu-projeto" class="mono">
-      <h3>Vídeo</h3>
-      <div class="form-grid">
-        <label>Resolução<select data-bind="p.settings.resolution">${["360p", "540p", "720p", "1080p"].map((r) => option(r, r, s.resolution)).join("")}</select></label>
-        <label>Proporção<select data-bind="p.settings.aspectRatio">${["16:9", "9:16", "1:1", "4:3", "3:2", "4:5", "21:9"].map((r) => option(r, r, s.aspectRatio)).join("")}</select></label>
-        <label>FPS<select data-bind="p.settings.fps" data-type="number">${[24, 25, 48, 50].map((r) => option(r, r, s.fps)).join("")}</select></label>
-        <label>Seed<input data-bind="p.settings.seed" data-type="number" type="number" min="0" value="${s.seed ?? ""}" placeholder="aleatória"></label>
-        <label title="Quantos segundos do fim do bloco anterior o LTX recebe para continuar o movimento">Contexto da continuação<select data-bind="p.settings.contextSeconds" data-type="number">${[1, 2, 3, 4, 5].map((r) => option(r, `${r} s`, s.contextSeconds)).join("")}</select></label>
-        <label class="check"><input type="checkbox" data-bind="p.settings.audio" ${s.audio ? "checked" : ""}> Gerar áudio</label>
-        <label class="check" title="Antes de cada bloco, a LLM vê o último quadro real dos blocos anteriores e a imagem inicial planejada e pode ajustar a continuidade, a imagem inicial e o prompt. Custa uma chamada de API por bloco."><input type="checkbox" data-bind="p.settings.review" data-rerender="1" ${s.review ? "checked" : ""}> Revisar a continuidade com IA antes de cada bloco</label>
-        <label class="check" title="Depois de cada bloco, a LLM olha quadros do take, o fim do bloco anterior e as fotos dos personagens. Se reprovar, o Takes gera outro take e fica com o melhor. Também confere as imagens de abertura geradas."><input type="checkbox" data-bind="p.settings.judge" data-rerender="1" ${s.judge ? "checked" : ""}> Juiz com IA depois de cada bloco</label>
-        ${s.judge ? `<label title="Quantos takes a mais o Takes gera quando o juiz reprova">Retakes se reprovar<select data-bind="p.settings.retakes" data-type="number">${[0, 1, 2, 3].map((r) => option(r, r === 0 ? "nenhum" : `até ${r}`, s.retakes)).join("")}</select></label>` : ""}
-        ${s.review || s.judge ? `<small class="muted">${state.ai.settings?.model ? `Usa o modelo ${esc(state.ai.settings.model.id)}, escolhido em Chaves de API. Cada bloco conferido é uma chamada de API com imagens.` : `Escolha um modelo em <a href="#" data-action="open-ai-keys">Chaves de API…</a>; sem modelo, os blocos seguem o plano sem conferência.`}</small>` : ""}
-      </div>
-      <p class="hint">Mude as configurações de vídeo antes de gerar a cena: os blocos de continuação herdam a resolução do bloco anterior.</p>
-    </section>
-    <section class="card">
-      <h3>Gerar vídeos</h3>
-      ${generateAllSummary(p)}
-      <div class="row">
-        <button class="btn primary" data-action="generate-film" ${p.scenes.length ? "" : "disabled"} title="Gera o que falta em todas as cenas, une tudo em um MP4 e escreve um relatório com o que precisa de você">Gerar o filme completo</button>
-        <button class="btn" data-action="generate-all" ${p.scenes.length ? "" : "disabled"}>Gerar todas as cenas</button>
-        <button class="btn" data-action="generate-all-missing" ${p.scenes.length ? "" : "disabled"} title="Em todas as cenas, gera só os blocos que ainda não têm vídeo">Só os pendentes</button>
-      </div>
+      ${st.blocks ? `<div class="meter"><div style="width:${pct}%"></div></div><p class="hint">${st.done} de ${st.blocks} blocos prontos (${pct}%)</p>` : ""}
       ${filmResult(p)}
+      ${st.blocks ? `<h4>Precisa de você</h4>${attentionPanel(p)}` : ""}
     </section>
-    ${attentionPanel(p)}
-    <section class="card">
-      <h3>Roteiro com LLM</h3>
-      <p class="hint">Cole o roteiro completo e gere todas as cenas com uma chave de API do Claude ou da OpenAI. Ou baixe o arquivo do projeto, use outra LLM e importe o que ela devolver.</p>
-      <button class="btn primary" data-action="open-llm">Abrir assistente de roteiro</button>
-    </section>
-    <section class="card">
-      <h3>Clonar projeto</h3>
-      <p class="hint">Cria um projeto novo com o mesmo pré-prompt, configurações, personagens (com fotos), fundos e cenas. A cópia começa sem vídeos gerados, sem prévias e sem pasta de saída.</p>
-      <button class="btn" data-action="clone-project">Clonar projeto</button>
-    </section>
-    <section class="card danger-zone">
-      <h3>Limpar e excluir</h3>
-      <p class="hint"><strong>Limpar todas as cenas</strong> apaga as ${p.scenes.length} cenas e mantém personagens, fundos e configurações. <strong>Excluir projeto</strong> move o projeto para a lixeira da biblioteca do Takes. Nos dois casos, os vídeos da pasta de saída não são apagados.</p>
-      <div class="row">
-        <button class="btn danger" data-action="clear-scenes" ${p.scenes.length ? "" : "disabled"}>Limpar todas as cenas</button>
-        <button class="btn danger" data-action="delete-project">Excluir projeto</button>
-      </div>
-    </section>
+
+    <div class="grid-2">
+      <section class="card">
+        <h3>Estilo</h3>
+        <label><span>Pré-prompt <span class="muted small">entra antes de todo prompt de vídeo e imagem; em inglês</span></span>
+          <textarea data-bind="p.prePrompt" rows="7" placeholder="Ex.: Cinematic 35mm film look, warm golden-hour light, shallow depth of field, handheld camera, realistic textures…">${esc(p.prePrompt)}</textarea>
+        </label>
+        <label>Prompt negativo
+          <textarea data-bind="p.negativePrompt" rows="2" placeholder="Ex.: blurry, distorted faces, text, watermark">${esc(p.negativePrompt)}</textarea>
+        </label>
+      </section>
+
+      <section class="card">
+        <h3>Saída e vídeo</h3>
+        <label><span>Pasta de saída <span class="muted small">uma subpasta por cena, um MP4 por bloco</span></span>
+          <div class="path-row">
+            <input data-bind="p.outputDir" value="${esc(p.outputDir)}" placeholder="/Users/você/Movies/meu-projeto" class="mono">
+            <button class="btn" data-action="pick-output">Escolher…</button>
+            ${p.outputDir ? `<button class="btn ghost" data-action="reveal" data-path="${esc(p.outputDir)}">Abrir</button>` : ""}
+          </div>
+        </label>
+        <div class="form-grid">
+          <label>Resolução<select data-bind="p.settings.resolution">${["360p", "540p", "720p", "1080p"].map((r) => option(r, r, s.resolution)).join("")}</select></label>
+          <label>Proporção<select data-bind="p.settings.aspectRatio">${["16:9", "9:16", "1:1", "4:3", "3:2", "4:5", "21:9"].map((r) => option(r, r, s.aspectRatio)).join("")}</select></label>
+          <label>FPS<select data-bind="p.settings.fps" data-type="number">${[24, 25, 48, 50].map((r) => option(r, r, s.fps)).join("")}</select></label>
+          <label>Seed<input data-bind="p.settings.seed" data-type="number" type="number" min="0" value="${s.seed ?? ""}" placeholder="aleatória"></label>
+          <label title="Quantos segundos do fim do bloco anterior o LTX recebe para continuar o movimento">Contexto da continuação<select data-bind="p.settings.contextSeconds" data-type="number">${[1, 2, 3, 4, 5].map((r) => option(r, `${r} s`, s.contextSeconds)).join("")}</select></label>
+          <label class="check"><input type="checkbox" data-bind="p.settings.audio" ${s.audio ? "checked" : ""}> Gerar áudio</label>
+        </div>
+        <p class="hint">Mude antes de gerar: os blocos de continuação herdam a resolução do bloco anterior.</p>
+      </section>
+
+      <section class="card">
+        <h3>IA durante a geração</h3>
+        <p class="hint">${model ? `Usa ${esc(modelName(state.ai.settings?.reviewModel ?? model))}, definido em <a href="#" data-action="open-settings">Configurações</a>.` : `Escolha um modelo em <a href="#" data-action="open-settings">Configurações</a>; sem modelo, os blocos seguem o plano sem conferência.`} Cada bloco conferido é uma chamada de API com imagens.</p>
+        <label class="check" title="Antes de cada bloco, a LLM vê o último quadro real dos blocos anteriores e pode ajustar a continuidade, a imagem inicial e o prompt."><input type="checkbox" data-bind="p.settings.review" ${s.review ? "checked" : ""}> Revisar a continuidade antes de cada bloco</label>
+        <label class="check" title="Depois de cada bloco, a LLM confere o take; se reprovar, o Takes gera outro e fica com o melhor."><input type="checkbox" data-bind="p.settings.judge" data-rerender="1" ${s.judge ? "checked" : ""}> Juiz depois de cada bloco</label>
+        ${s.judge ? `<label class="inline indent">Retakes se reprovar <select data-bind="p.settings.retakes" data-type="number">${[0, 1, 2, 3].map((r) => option(r, r === 0 ? "nenhum" : `até ${r}`, s.retakes)).join("")}</select></label>` : ""}
+      </section>
+
+      <section class="card">
+        <h3>Projeto</h3>
+        <p class="hint">Clonar copia pré-prompt, configurações, personagens, fundos e cenas, sem os vídeos. Limpar e excluir não apagam os vídeos da pasta de saída.</p>
+        <div class="row">
+          <button class="btn" data-action="clone-project">Clonar projeto…</button>
+          <span class="grow"></span>
+          <button class="btn ghost danger" data-action="clear-scenes" ${p.scenes.length ? "" : "disabled"}>Limpar cenas</button>
+          <button class="btn ghost danger" data-action="delete-project">Excluir projeto</button>
+        </div>
+      </section>
+    </div>
   </div>`;
 }
 
@@ -472,9 +497,11 @@ function scenes() {
     .join("");
   return `<div class="scenes-layout">
     <div class="scene-list">
+      <div class="scene-list-actions">
+        <button class="btn grow" data-action="new-scene">＋ Nova cena</button>
+        <button class="btn grow" data-action="open-llm" title="Cole o roteiro; a IA cria as cenas">✦ Com IA</button>
+      </div>
       ${list || `<p class="muted pad">Nenhuma cena.</p>`}
-      <button class="btn block-btn" data-action="new-scene">＋ Nova cena</button>
-      <button class="btn ghost block-btn" data-action="open-llm">Importar roteiro de LLM</button>
     </div>
     <div class="scene-editor">${scene ? sceneEditor(scene) : `<p class="muted">Crie uma cena para começar.</p>`}</div>
   </div>`;
@@ -642,6 +669,8 @@ function sceneEditor(scene) {
   const running = job?.status === "running" ? job : null;
   const start = startImageFile(scene);
   const allReady = scene.blocks.length && scene.blocks.every((b) => b.state === "ready");
+  const ready = scene.blocks.filter((b) => b.state === "ready").length;
+  const index = p.scenes.findIndex((s) => s.id === scene.id);
   let t = 0;
   const blocks = scene.blocks
     .map((b, i) => {
@@ -650,40 +679,50 @@ function sceneEditor(scene) {
       return html;
     })
     .join("");
-  return `<div class="card">
+  return `<div class="card scene-card">
       <div class="scene-head">
+        <span class="scene-num">Cena ${index + 1}</span>
         <input class="scene-title" data-bind="s.${scene.id}.title" value="${esc(scene.title)}" aria-label="Título da cena">
-        <div class="row">
-          <button class="btn icon" data-action="move-scene" data-dir="-1" title="Mover para cima">↑</button>
-          <button class="btn icon" data-action="move-scene" data-dir="1" title="Mover para baixo">↓</button>
-          <button class="btn ghost danger" data-action="delete-scene">Excluir cena</button>
+        <div class="icon-group">
+          <button class="btn icon" data-action="move-scene" data-dir="-1" title="Mover a cena para cima">↑</button>
+          <button class="btn icon" data-action="move-scene" data-dir="1" title="Mover a cena para baixo">↓</button>
+          <button class="btn icon danger" data-action="delete-scene" title="Excluir a cena">✕</button>
         </div>
-      </div>
-      <textarea data-bind="s.${scene.id}.synopsis" rows="2" placeholder="Sinopse da cena (referência sua e da LLM; não entra no prompt)">${esc(scene.synopsis)}</textarea>
-      <div class="scene-setup">
-        <div>
-          <label>Fundo (descrição entra no prompt)
-            <select data-change="scene-background">${option("", "Nenhum", scene.backgroundId ?? "")}${p.backgrounds.map((b) => option(b.id, b.name, scene.backgroundId ?? "")).join("")}</select>
-          </label>
-          <label>Imagem inicial do 1º bloco
-            <select data-change="scene-start">${startOptions(scene)}</select>
-          </label>
-          <div class="label">Elenco da cena</div>
-          <div class="chips">${castChips(scene.characterIds, "toggle-scene-cast")}</div>
-        </div>
-        <div class="start-thumb">${start ? `<img src="${mediaUrl(start, start)}" alt="Imagem inicial">` : `<div class="placeholder">Sem imagem inicial</div>`}
-          <button class="btn small" data-action="preview-for-scene">Gerar prévia do ambiente</button></div>
       </div>
       <div class="scene-actions">
-        <button class="btn primary" data-action="generate-scene" ${job ? "disabled" : ""}>${job ? "Na fila…" : "Gerar cena inteira"}</button>
-        <button class="btn" data-action="generate-missing" ${job ? "disabled" : ""}>Gerar só os pendentes</button>
+        <button class="btn primary" data-action="generate-missing" ${job ? "disabled" : ""} title="Gera os blocos desta cena que ainda não têm vídeo">${job ? "Na fila…" : "Gerar pendentes"}</button>
+        <button class="btn" data-action="generate-scene" ${job ? "disabled" : ""} title="Gera de novo todos os blocos desta cena">Gerar a cena toda</button>
         ${job ? `<button class="btn danger" data-action="cancel-job" data-id="${job.id}">Cancelar</button>` : ""}
-        <button class="btn" data-action="play-scene">▶ Assistir cena</button>
+        <span class="divider"></span>
+        <button class="btn" data-action="play-scene">▶ Assistir</button>
         <button class="btn ghost" data-action="export-scene" ${allReady ? "" : "disabled"} title="Une todos os blocos em um MP4 para conferência">Exportar unida</button>
         <span class="grow"></span>
-        <span class="total">Duração total <strong data-total>${fmtTime(t)}</strong></span>
+        <span class="total">${ready}/${scene.blocks.length} prontos · <strong data-total>${fmtTime(t)}</strong></span>
       </div>
       ${running ? `<div class="job-inline">${jobLine(running)}</div>` : ""}
+      <details class="scene-setup-wrap" ${state.sceneSetupOpen ? "open" : ""} data-toggle="scene-setup">
+        <summary>Ambiente, abertura e elenco <span class="muted small">${esc(p.backgrounds.find((b) => b.id === scene.backgroundId)?.name ?? "sem fundo")} · ${scene.characterIds.length} no elenco</span></summary>
+        <div class="scene-setup">
+          <div>
+            <label><span>Sinopse <span class="muted small">referência sua e da IA; não entra no prompt</span></span>
+              <textarea data-bind="s.${scene.id}.synopsis" rows="2">${esc(scene.synopsis)}</textarea>
+            </label>
+            <div class="form-grid two">
+              <label><span>Fundo <span class="muted small">a descrição entra no prompt</span></span>
+                <select data-change="scene-background">${option("", "Nenhum", scene.backgroundId ?? "")}${p.backgrounds.map((b) => option(b.id, b.name, scene.backgroundId ?? "")).join("")}</select>
+              </label>
+              <label><span>Abertura da cena <span class="muted small">imagem inicial do 1º bloco</span></span>
+                <select data-change="scene-start">${startOptions(scene)}</select>
+              </label>
+            </div>
+            ${scene.start.kind === "keyframe" && scene.blocks[0] ? keyframeEditor(scene, scene.blocks[0], 0, scene.start, { sceneLevel: true }) : ""}
+            <div class="label">Elenco da cena</div>
+            <div class="chips">${castChips(scene.characterIds, "toggle-scene-cast")}</div>
+          </div>
+          <div class="start-thumb">${start ? `<img src="${mediaUrl(start, start)}" alt="Imagem inicial">` : `<div class="placeholder">${scene.start.kind === "previous" ? "Último quadro da cena anterior" : scene.start.kind === "keyframe" ? "Gerada antes do 1º bloco" : "Sem imagem inicial"}</div>`}
+            <button class="btn small" data-action="preview-for-scene">Gerar prévia do ambiente</button></div>
+        </div>
+      </details>
     </div>
     <div class="blocks">${blocks}</div>
     <button class="btn block-btn" data-action="add-block">＋ Adicionar bloco</button>`;
@@ -696,34 +735,36 @@ function blockCard(scene, b, i, t, running) {
   const st = isRunning ? "running" : isQueued ? "queued" : b.state || "empty";
   const label = isRunning ? `Gerando ${running.stepProgress ?? 0}%` : isQueued ? "Na fila" : STATE_LABEL[st];
   const custom = b.characterIds != null;
+  const field = (title, hint, html) => `<div class="field"><div class="field-label">${title}${hint ? ` <span class="muted">${hint}</span>` : ""}</div>${html}</div>`;
   return `<article class="block card st-${st}">
     <div class="block-head">
       <span class="block-num">${i + 1}</span>
       <span class="range" data-range="${b.id}">${fmtTime(t)}–${fmtTime(t + Number(b.duration || 0))}</span>
       <span class="status ${st}">${label}</span>
-      ${st === "stale" ? `<span class="hint">O bloco anterior mudou depois desta geração. Gere de novo para manter a continuidade.</span>` : ""}
+      ${st === "stale" ? `<span class="hint">O bloco de origem mudou depois desta geração. Gere de novo para manter a continuidade.</span>` : ""}
       <span class="grow"></span>
-      <button class="btn icon" data-action="move-block" data-id="${b.id}" data-dir="-1" title="Subir">↑</button>
-      <button class="btn icon" data-action="move-block" data-id="${b.id}" data-dir="1" title="Descer">↓</button>
-      <button class="btn icon" data-action="duplicate-block" data-id="${b.id}" title="Duplicar">⧉</button>
-      <button class="btn icon danger" data-action="delete-block" data-id="${b.id}" title="Excluir">✕</button>
+      <div class="icon-group">
+        <button class="btn icon" data-action="move-block" data-id="${b.id}" data-dir="-1" title="Subir">↑</button>
+        <button class="btn icon" data-action="move-block" data-id="${b.id}" data-dir="1" title="Descer">↓</button>
+        <button class="btn icon" data-action="duplicate-block" data-id="${b.id}" title="Duplicar">⧉</button>
+        <button class="btn icon danger" data-action="delete-block" data-id="${b.id}" title="Excluir">✕</button>
+      </div>
     </div>
     <div class="block-body">
       <div class="block-fields">
+        ${b.review ? reviewBox(scene, b) : ""}
         <div class="form-row">
           ${
             i === 0
-              ? `<span class="pill">Abre a cena${startImageFile(scene) ? " a partir da imagem inicial" : " só pelo texto"}</span>`
-              : `<select data-bind="k.${scene.id}.${b.id}.continuity" data-rerender="1">${Object.entries(CONTINUITY_LABEL).map(([v, l]) => option(v, l, b.continuity)).join("")}</select>`
+              ? `<span class="pill">Abre a cena · ${scene.start.kind === "previous" ? "do fim da cena anterior" : scene.start.kind === "keyframe" ? "imagem gerada" : startImageFile(scene) ? "imagem inicial" : "só pelo texto"}</span>`
+              : `<label class="inline">Ligação <select data-bind="k.${scene.id}.${b.id}.continuity" data-rerender="1">${Object.entries(CONTINUITY_LABEL).map(([v, l]) => option(v, l, b.continuity)).join("")}</select></label>`
           }
           <label class="inline">Duração <input type="number" min="2" max="20" step="1" data-type="number" data-live="1" data-change="clamp-duration" data-bind="k.${scene.id}.${b.id}.duration" value="${b.duration}"> s</label>
         </div>
-        ${b.review ? reviewBox(scene, b) : ""}
         ${i > 0 && b.continuity === "cut" ? cutStartPicker(scene, b, i) : ""}
-        ${i === 0 && scene.start.kind === "keyframe" ? keyframeEditor(scene, b, 0, scene.start, { sceneLevel: true }) : ""}
-        <textarea data-bind="k.${scene.id}.${b.id}.prompt" rows="4" placeholder="O que acontece neste bloco (em inglês): ação, movimento, câmera, luz…">${esc(b.prompt)}</textarea>
-        <textarea class="state" data-bind="k.${scene.id}.${b.id}.state" rows="1" placeholder="Estado atual (em inglês; entra no prompt): o que mudou no lugar e nos objetos. Ex.: The gate stands wide open.">${esc(b.state || "")}</textarea>
-        <textarea class="note" data-bind="k.${scene.id}.${b.id}.note" rows="${b.note ? 2 : 1}" placeholder="Nota de continuidade (sua e da LLM; não entra no prompt). Ex.: o portão já está aberto aqui.">${esc(b.note || "")}</textarea>
+        ${field("Prompt", "em inglês: ação, movimento, câmera, luz", `<textarea data-bind="k.${scene.id}.${b.id}.prompt" rows="4">${esc(b.prompt)}</textarea>`)}
+        ${field("Estado atual", "em inglês; entra no prompt", `<textarea class="state" data-bind="k.${scene.id}.${b.id}.currentState" rows="1" placeholder="O que mudou no lugar e nos objetos. Ex.: The gate stands wide open.">${esc(b.currentState || "")}</textarea>`)}
+        ${field("Nota de continuidade", "não entra no prompt", `<textarea class="note" data-bind="k.${scene.id}.${b.id}.note" rows="${b.note ? 2 : 1}" placeholder="O que conferir neste bloco.">${esc(b.note || "")}</textarea>`)}
         <div class="cast-row">
           <label class="check"><input type="checkbox" data-change="block-cast-custom" data-scene="${scene.id}" data-id="${b.id}" ${custom ? "checked" : ""}> Elenco próprio neste bloco</label>
           ${custom ? `<div class="chips">${castChips(b.characterIds, "toggle-block-cast", `data-block="${b.id}"`)}</div>` : `<span class="muted small">usa o elenco da cena</span>`}
@@ -732,17 +773,16 @@ function blockCard(scene, b, i, t, running) {
       <div class="block-media">
         ${take ? `<video src="${mediaUrl(take.file, take.id)}" preload="metadata" muted controls></video>` : `<div class="placeholder">${isRunning ? (running.phase ? esc(running.phase) : "Gerando…") : "Sem vídeo"}</div>`}
         ${judgeLine(take)}
-        <div class="row">
+        <div class="take-actions">
           ${
             b.takes.length > 1
-              ? `<select data-change="select-take" data-scene="${scene.id}" data-id="${b.id}">${b.takes.map((x, n) => option(x.id, `Take ${n + 1}${x.judge ? ` · ${x.judge.score}/10${x.judge.pass ? "" : " ✗"}` : ""}`, b.selectedTakeId)).join("")}</select>`
+              ? `<select data-change="select-take" data-scene="${scene.id}" data-id="${b.id}" title="Take usado na cena">${b.takes.map((x, n) => option(x.id, `Take ${n + 1}${x.judge ? ` · ${x.judge.score}/10${x.judge.pass ? "" : " ✗"}` : ""}`, b.selectedTakeId)).join("")}</select>`
               : ""
           }
-          <button class="btn small" data-action="generate-block" data-id="${b.id}" ${running ? "disabled" : ""}>${take ? "Gerar de novo" : "Gerar"}</button>
+          <button class="btn small ${take ? "" : "primary"}" data-action="generate-block" data-id="${b.id}" ${running ? "disabled" : ""}>${take ? "Gerar outro take" : "Gerar"}</button>
           ${i < scene.blocks.length - 1 ? `<button class="btn small ghost" data-action="generate-from" data-index="${i}" ${running ? "disabled" : ""} title="Gera este bloco e todos os seguintes">Daqui em diante</button>` : ""}
-          ${take ? `<button class="btn small ghost" data-action="save-frame" data-scene="${scene.id}" data-id="${b.id}" title="Salva o quadro em que o vídeo está parado como imagem, para abrir um corte, a cena ou virar fundo">Salvar quadro</button>` : ""}
-          ${take ? `<button class="btn small ghost" data-action="reveal" data-path="${esc(take.file)}">Finder</button>` : ""}
         </div>
+        ${take ? `<div class="take-tools"><button class="btn small ghost" data-action="save-frame" data-scene="${scene.id}" data-id="${b.id}" title="Salva o quadro em que o vídeo está parado como imagem, para abrir um corte, a cena ou virar fundo">📷 Salvar quadro</button><button class="btn small ghost" data-action="reveal" data-path="${esc(take.file)}">Mostrar no Finder</button></div>` : ""}
       </div>
     </div>
   </article>`;
@@ -756,13 +796,15 @@ function previews() {
     .map(
       (x) => `<div class="card preview-card">
         <a href="${mediaUrl(x.file, x.id)}" target="_blank"><img src="${mediaUrl(x.file, x.id)}" alt=""></a>
-        <small class="muted">${new Date(x.createdAt).toLocaleString("pt-BR")}${x.sceneId ? ` · ${esc(p.scenes.find((s) => s.id === x.sceneId)?.title ?? "")}` : ""}</small>
+        <div class="row preview-meta">
+          <small class="muted grow">${esc(previewLabel(x, p.scenes.find((s) => s.id === x.sceneId) ?? { id: null }))}</small>
+          <button class="btn icon" data-action="reveal" data-path="${esc(x.file)}" title="Mostrar no Finder">⌕</button>
+          <button class="btn icon danger" data-action="delete-preview" data-id="${x.id}" title="Remover da lista (o arquivo continua na pasta)">✕</button>
+        </div>
         <details><summary>Prompt</summary><pre>${esc(x.prompt)}</pre></details>
         <div class="row">
-          <select data-change="preview-to-scene" data-id="${x.id}"><option value="">Usar como início de…</option>${p.scenes.map((s) => option(s.id, s.title, "")).join("")}</select>
+          <select data-change="preview-to-scene" data-id="${x.id}"><option value="">Usar como abertura de…</option>${p.scenes.map((s) => option(s.id, s.title, "")).join("")}</select>
           <button class="btn small" data-action="preview-to-background" data-id="${x.id}">Salvar como fundo</button>
-          <button class="btn small ghost" data-action="reveal" data-path="${esc(x.file)}">Finder</button>
-          <button class="btn small ghost danger" data-action="delete-preview" data-id="${x.id}" title="Remove da lista; o arquivo continua na pasta">Remover</button>
         </div>
       </div>`,
     )
@@ -797,31 +839,43 @@ function jobLine(j) {
 const JOB_STATUS = { queued: "Na fila", running: "Gerando", complete: "Concluída", error: "Erro", cancelled: "Cancelada", interrupted: "Interrompida" };
 const RESUMABLE = ["interrupted", "error", "cancelled"];
 
+function jobCard(j, { position = null } = {}) {
+  const name = state.projects.find((p) => p.id === j.projectId)?.name ?? "";
+  return `<div class="card job ${j.status}">
+      <div class="row">
+        ${position ? `<span class="job-pos">${position}</span>` : ""}
+        <strong class="grow">${esc(j.title || j.kind)}</strong>
+        <span class="muted small">${esc(name)}</span>
+        <span class="status ${j.status}">${JOB_STATUS[j.status]}</span>
+        ${["queued", "running"].includes(j.status) ? `<button class="btn small ghost danger" data-action="cancel-job" data-id="${j.id}">Cancelar</button>` : `<button class="btn small ghost" data-action="remove-job" data-id="${j.id}" title="Tira da lista; os arquivos continuam">Remover</button>`}
+      </div>
+      ${j.status === "running" ? jobLine(j) : ""}
+      ${j.error ? `<pre class="error">${esc(j.error)}</pre>` : ""}
+      ${j.reviews?.length ? `<small class="muted">Revisão de continuidade: ${j.reviews.filter((r) => r.changed).length} de ${j.reviews.length} bloco(s) ajustado(s).</small>` : ""}
+      ${j.judged?.length ? `<small class="muted">Juiz: ${j.judged.filter((x) => x.pass).length} de ${j.judged.length} take(s) aprovado(s).</small>` : ""}
+      ${(j.warnings ?? []).map((w) => `<small class="warn">${esc(w)}</small>`).join("")}
+      ${j.kind === "film" && j.status === "complete" && j.result ? `<div class="row">${j.result.file ? `<button class="btn small" data-action="reveal" data-path="${esc(j.result.file)}">Mostrar o filme</button>` : ""}<button class="btn small ghost" data-action="reveal" data-path="${esc(j.result.report)}">Relatório</button><small class="muted">${esc(j.phase || "")}</small></div>` : ""}
+      ${j.kind === "avatar" && j.result?.draft ? `<small>Foto pronta — abra o personagem para usar.</small>` : ""}
+      ${(RESUMABLE.includes(j.status) && j.kind === "video") || j.steps?.length ? `<div class="row">
+        ${RESUMABLE.includes(j.status) && j.kind === "video" ? `<button class="btn small primary" data-action="resume-job" data-id="${j.id}" title="Gera os blocos que faltaram">Retomar</button>` : ""}
+        ${j.steps?.length ? `<small class="muted">${j.steps.length} bloco(s) salvo(s)</small>` : ""}
+      </div>` : ""}
+    </div>`;
+}
+
+// Fila em três partes: o que está gerando, o que vem depois (na ordem em que vai rodar) e o histórico.
 function queue() {
-  const name = (id) => state.projects.find((p) => p.id === id)?.name ?? "";
-  const rows = [...state.jobs]
-    .reverse()
-    .map(
-      (j) => `<div class="card job ${j.status}">
-        <div class="row"><strong class="grow">${esc(j.title || j.kind)}</strong><span class="muted">${esc(name(j.projectId))}</span><span class="status ${j.status}">${JOB_STATUS[j.status]}</span></div>
-        ${j.status === "running" ? jobLine(j) : ""}
-        ${j.error ? `<pre class="error">${esc(j.error)}</pre>` : ""}
-        ${j.reviews?.length ? `<small class="muted">Revisão de continuidade: ${j.reviews.filter((r) => r.changed).length} de ${j.reviews.length} bloco(s) ajustado(s).</small>` : ""}
-        ${j.judged?.length ? `<small class="muted">Juiz: ${j.judged.filter((x) => x.pass).length} de ${j.judged.length} take(s) aprovado(s).</small>` : ""}
-        ${(j.warnings ?? []).map((w) => `<small class="warn">${esc(w)}</small>`).join("")}
-        ${j.kind === "film" && j.status === "complete" && j.result ? `<div class="row">${j.result.file ? `<button class="btn small" data-action="reveal" data-path="${esc(j.result.file)}">Mostrar o filme</button>` : ""}<button class="btn small ghost" data-action="reveal" data-path="${esc(j.result.report)}">Relatório</button><small class="muted">${esc(j.phase || "")}</small></div>` : ""}
-        ${j.kind === "avatar" && j.result?.draft ? `<small>Foto pronta — abra o personagem para usar.</small>` : ""}
-        <div class="row">
-          ${["queued", "running"].includes(j.status) ? `<button class="btn small danger" data-action="cancel-job" data-id="${j.id}">Cancelar</button>` : `<button class="btn small ghost" data-action="remove-job" data-id="${j.id}">Remover</button>`}
-          ${RESUMABLE.includes(j.status) && j.kind === "video" ? `<button class="btn small primary" data-action="resume-job" data-id="${j.id}" title="Gera os blocos que faltaram">Retomar</button>` : ""}
-          ${j.steps?.length ? `<small class="muted">${j.steps.length} bloco(s) salvo(s)</small>` : ""}
-        </div>
-      </div>`,
-    )
-    .join("");
-  return `<div class="toolbar"><button class="btn ghost" data-action="clear-jobs">Limpar concluídas</button>
-    <span class="hint">O LTX gera uma coisa por vez; as tarefas rodam em ordem. Deixe o LTX Desktop aberto.</span></div>
-    ${rows || `<p class="muted">Nenhuma tarefa.</p>`}`;
+  const running = state.jobs.filter((j) => j.status === "running");
+  const queued = state.jobs.filter((j) => j.status === "queued"); // a fila roda na ordem em que as tarefas entraram
+  const finished = state.jobs.filter((j) => !["running", "queued"].includes(j.status)).reverse();
+  const section = (title, hint, body, extra = "") => `<section class="queue-section">
+      <div class="section-head"><h3>${title}</h3>${extra}</div>
+      ${hint ? `<p class="hint">${hint}</p>` : ""}
+      ${body}
+    </section>`;
+  return `${section("Gerando agora", "", running.length ? running.map((j) => jobCard(j)).join("") : `<p class="muted empty-line">Nada gerando. Deixe o LTX Desktop aberto; o LTX gera uma coisa por vez.</p>`)}
+    ${section(`Na fila${queued.length ? ` (${queued.length})` : ""}`, queued.length ? "Na ordem em que vão rodar, de cima para baixo." : "", queued.length ? queued.map((j, i) => jobCard(j, { position: i + 1 })).join("") : `<p class="muted empty-line">Fila vazia.</p>`)}
+    ${section(`Concluídas${finished.length ? ` (${finished.length})` : ""}`, "", finished.length ? finished.map((j) => jobCard(j)).join("") : `<p class="muted empty-line">Nenhuma tarefa concluída.</p>`, finished.length ? `<button class="btn small ghost" data-action="clear-jobs">Limpar concluídas</button>` : "")}`;
 }
 
 // ---------- modais ----------
@@ -832,7 +886,7 @@ function renderModal() {
     root.innerHTML = "";
     return;
   }
-  const content = m.type === "character" ? characterModal(m) : m.type === "llm" ? llmModal() : m.type === "ai-keys" ? aiKeysModal(m) : "";
+  const content = m.type === "character" ? characterModal(m) : m.type === "llm" ? scriptModal() : m.type === "settings" ? settingsModal(m) : "";
   root.innerHTML = `<div class="overlay" data-action="overlay-close">${content}</div>`;
 }
 
@@ -843,7 +897,7 @@ function characterModal(m) {
   const active = job && ["queued", "running"].includes(job.status);
   const draft = job?.status === "complete" && job.result?.draft && !m.dismissed?.includes(job.id) ? job : null;
   const field = (key, label, rows, hint = "") =>
-    `<label>${label}${hint ? ` <span class="muted small">${hint}</span>` : ""}<textarea data-bind="c.${c.id}.${key}" rows="${rows}">${esc(c[key])}</textarea></label>`;
+    `<label><span>${label}${hint ? ` <span class="muted small">${hint}</span></span>` : ""}<textarea data-bind="c.${c.id}.${key}" rows="${rows}">${esc(c[key])}</textarea></label>`;
   return `<div class="modal wide" role="dialog" aria-label="Personagem">
     <div class="modal-head"><h2>${esc(c.name)}</h2><button class="icon-btn" data-action="close-modal" title="Fechar">✕</button></div>
     <div class="char-editor">
@@ -898,50 +952,132 @@ function characterModal(m) {
 
 const PHASE_SECONDS = (t) => Math.round((Date.now() - t.startedAt) / 1000);
 
-function modelSelect() {
+const EFFORT_LABEL = { low: "Baixo", medium: "Médio", high: "Alto", xhigh: "Muito alto", max: "Máximo" };
+
+// Lista de modelos dos provedores com chave. `value` no formato "provedor:id".
+function modelOptions(current, { inherit = null } = {}) {
   const a = state.ai;
-  if (!a.settings) return `<span class="muted small">Carregando…</span>`;
-  const configured = a.settings.providers.filter((p) => p.configured);
-  if (!configured.length) return `<button class="btn primary" data-action="open-ai-keys">Cadastrar chave de API…</button>`;
-  if (a.loading && !a.models.length) return `<span class="muted small">Buscando modelos…</span>`;
+  const configured = (a.settings?.providers ?? []).filter((p) => p.configured);
   const groups = configured
     .map((p) => {
       const list = a.models.filter((m) => m.provider === p.id);
-      return list.length ? `<optgroup label="${esc(p.name)}">${list.map((m) => option(`${m.provider}:${m.id}`, m.name, state.llm.model)).join("")}</optgroup>` : "";
+      return list.length ? `<optgroup label="${esc(p.name)}">${list.map((m) => option(`${m.provider}:${m.id}`, m.name, current)).join("")}</optgroup>` : "";
     })
     .join("");
-  return `<select data-change="llm-model" aria-label="Modelo">${option("", "Escolha o modelo…", state.llm.model)}${groups}</select>
-    <button class="btn ghost small" data-action="refresh-ai-models" title="Atualizar a lista de modelos">↻</button>`;
+  return `${option("", inherit ?? "Escolha o modelo…", current)}${groups}`;
 }
 
-function aiSection() {
+const modelKey = (m) => (m ? `${m.provider}:${m.id}` : "");
+const modelName = (m) => (m ? state.ai.models.find((x) => x.provider === m.provider && x.id === m.id)?.name ?? m.id : "");
+
+// Assistente de roteiro: gera as cenas com o modelo das Configurações e importa sozinho.
+function scriptModal() {
   const l = state.llm;
   const a = state.ai;
   const t = l.task;
   const running = t?.status === "running";
-  const configured = a.settings?.providers.some((p) => p.configured);
-  return `<section>
-    <h3><span class="step">1</span> Gere as cenas pela API</h3>
-    <p class="hint">Cole o roteiro completo. A LLM divide em cenas e blocos de até 20 s usando os personagens e fundos do projeto. O resultado aparece abaixo para revisar antes de importar.</p>
-    <div class="form-row">
-      <span class="muted small">Modelo</span>${modelSelect()}
-      <span class="grow"></span>
-      ${configured ? `<button class="btn ghost small" data-action="open-ai-keys">Chaves de API…</button>` : ""}
+  const model = a.settings?.model;
+  const p = state.project;
+  const imported = t?.status === "complete" && t.imported;
+  return `<div class="modal wide" role="dialog" aria-label="Gerar cenas com IA">
+    <div class="modal-head"><h2>Gerar cenas com IA</h2><button class="icon-btn" data-action="close-modal" title="Fechar">✕</button></div>
+    <div class="steps">
+      <section>
+        <div class="model-line">
+          ${model ? `<span>Modelo: <strong>${esc(modelName(model))}</strong> · esforço ${esc((EFFORT_LABEL[a.settings.effort] ?? a.settings.effort).toLowerCase())}</span>` : `<span class="warn">Nenhum modelo escolhido.</span>`}
+          <button class="btn small ghost" data-action="open-settings">${model ? "Alterar…" : "Configurar…"}</button>
+        </div>
+        <p class="hint">Cole o roteiro completo (cenas, ações e falas). A IA divide em cenas e blocos de até 20 s usando os personagens e fundos do projeto, confere o resultado e importa as cenas direto no projeto. A geração continua se você fechar esta janela.</p>
+        <textarea data-focus="llm-full" data-llm="fullScript" rows="12" placeholder="Cole aqui o roteiro completo." ${running ? "disabled" : ""}>${esc(l.fullScript)}</textarea>
+        <div class="script-options">
+          <label class="inline">Duração total <input class="wide-num" type="number" min="2" data-focus="llm-full-seconds" data-llm="fullSeconds" value="${esc(l.fullSeconds)}" placeholder="opcional" ${running ? "disabled" : ""}> s</label>
+          <label class="inline">Cenas geradas
+            <select data-change="llm-mode" ${running ? "disabled" : ""}>${option("append", p.scenes.length ? `Adicionar depois ${p.scenes.length === 1 ? "da cena atual" : `das ${p.scenes.length} cenas atuais`}` : "Adicionar ao projeto", l.mode)}${p.scenes.length ? option("replace", p.scenes.length === 1 ? "Substituir a cena atual" : `Substituir as ${p.scenes.length} cenas atuais`, l.mode) : ""}</select>
+          </label>
+          <label class="check"><input type="checkbox" data-change="llm-film" ${l.film ? "checked" : ""} ${running ? "disabled" : ""}> Depois de importar, gerar o filme</label>
+        </div>
+      </section>
+      <div class="action-bar">
+        ${running ? `<div class="hint ai-running grow"><span class="spinner" aria-hidden="true"></span><p class="ai-progress">${aiProgress(t)}</p></div>` : `<span class="grow"></span>`}
+        ${running ? `<button class="btn danger" data-action="ai-cancel">Cancelar</button>` : `<button class="btn primary" data-action="ai-generate" ${model ? "" : "disabled"}>Gerar e importar cenas</button>`}
+      </div>
+      ${t?.status === "error" ? `<section><pre class="error">${esc(t.error)}</pre>${t.text ? `<details><summary class="muted small">Ver a resposta da IA</summary><pre class="mono raw">${esc(t.text.slice(0, 20000))}</pre></details>` : ""}</section>` : ""}
+      ${imported ? importedSummary(t) : ""}
     </div>
-    ${a.errors.map((e) => `<p class="error small">${esc(e.error)}</p>`).join("")}
-    <textarea data-focus="llm-full" data-llm="fullScript" rows="10" placeholder="Cole aqui o roteiro completo: cenas, ações e falas.">${esc(l.fullScript)}</textarea>
-    <div class="row">
-      <label class="inline">Duração total <input type="number" min="2" data-focus="llm-full-seconds" data-llm="fullSeconds" value="${esc(l.fullSeconds)}" placeholder="opcional"> s</label>
-      <span class="grow"></span>
-      ${
-        running
-          ? `<button class="btn danger" data-action="ai-cancel">Cancelar</button>`
-          : `<button class="btn primary" data-action="ai-generate" ${configured ? "" : "disabled"}>Gerar cenas</button>`
-      }
+  </div>`;
+}
+
+function importedSummary(t) {
+  const r = t.imported;
+  const p = state.project;
+  const scenes = r.sceneIds.map((id) => p.scenes.find((x) => x.id === id)).filter(Boolean);
+  return `<section class="imported">
+      <div class="section-head">
+        <h3>✓ ${r.scenes} ${r.scenes === 1 ? "cena importada" : "cenas importadas"} · ${r.blocks} blocos</h3>
+        <button class="btn primary small" data-action="goto-imported">Ver as cenas</button>
+      </div>
+      ${r.film?.error ? `<p class="error small">O filme não entrou na fila: ${esc(r.film.error)}</p>` : r.film ? `<p class="hint">O filme está na fila (${r.film.scenes} cena(s)). Acompanhe na aba Fila.</p>` : ""}
+      ${r.warnings?.length ? `<ul class="warn small">${r.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}
+      <ol class="script-preview">${scenes.map((s) => `<li><strong>${esc(s.title)}</strong> <span class="muted small">${s.blocks.length} blocos · ${fmtTime(sceneSeconds(s))}</span></li>`).join("")}</ol>
+    </section>`;
+}
+
+// Configurações gerais: chaves de API, modelos de IA e padrões de projeto novo. Valem para todos os projetos.
+function settingsModal(m) {
+  const a = state.ai;
+  const providers = a.settings?.providers ?? [];
+  const d = m.defaults;
+  const effortSelect = (field, value) => `<select data-settings="${field}">${Object.entries(EFFORT_LABEL).map(([v, l]) => option(v, l, value)).join("")}</select>`;
+  return `<div class="modal wide" role="dialog" aria-label="Configurações">
+    <div class="modal-head"><h2>Configurações</h2><button class="icon-btn" data-action="close-settings" title="Fechar">✕</button></div>
+    <div class="steps settings">
+      <section>
+        <h3>Chaves de API</h3>
+        <p class="hint">Ficam só neste Mac, na biblioteca do Takes, e valem para todos os projetos. Cada uso é cobrado na sua conta do provedor.</p>
+        ${providers
+          .map(
+            (p) => `<div class="key-row">
+              <span class="key-name">${esc(p.name)}</span>
+              <input type="password" autocomplete="off" spellcheck="false" class="mono grow" data-focus="ai-key-${p.id}" data-ai-key="${p.id}" value="${esc(m.keys[p.id] ?? "")}" placeholder="${p.configured ? `Salva (${esc(p.hint)}). Cole outra para trocar.` : "Cole a chave aqui"}">
+              ${p.configured ? `<button class="btn ghost danger small" data-action="remove-ai-key" data-id="${p.id}">Remover</button>` : `<a class="btn ghost small" href="${esc(p.keyUrl)}" target="_blank" rel="noopener">Criar chave</a>`}
+            </div>`,
+          )
+          .join("")}
+        ${a.errors.map((e) => `<p class="error small">${esc(e.error)}</p>`).join("")}
+      </section>
+      <section>
+        <div class="section-head"><h3>Modelos de IA</h3><button class="btn ghost small" data-action="refresh-ai-models" title="Atualizar a lista de modelos">↻ Atualizar lista</button></div>
+        ${
+          a.models.length
+            ? `<div class="settings-grid">
+                <label><span>Roteiro <span class="muted small">divide o roteiro em cenas e blocos</span></span><select data-settings="model">${modelOptions(m.model)}</select></label>
+                <label>Esforço do roteiro${effortSelect("effort", m.effort)}</label>
+                <label><span>Revisão e juiz <span class="muted small">confere continuidade e takes, com imagens</span></span><select data-settings="reviewModel">${modelOptions(m.reviewModel, { inherit: "Igual ao do roteiro" })}</select></label>
+                <label>Esforço da revisão e do juiz${effortSelect("reviewEffort", m.reviewEffort)}</label>
+              </div>
+              <p class="hint">Mais esforço pensa mais antes de responder: melhor resultado, mais tempo e custo. O roteiro costuma valer o esforço alto; a revisão e o juiz rodam a cada bloco, então o médio costuma bastar.</p>`
+            : `<p class="hint">${a.loading ? "Buscando modelos…" : "Cadastre uma chave de API e salve para listar os modelos."}</p>`
+        }
+      </section>
+      <section>
+        <h3>Padrões de um projeto novo</h3>
+        <p class="hint">Valem para os próximos projetos criados. Cada projeto muda os seus na aba Projeto.</p>
+        <div class="form-grid">
+          <label>Resolução<select data-default="resolution">${["360p", "540p", "720p", "1080p"].map((r) => option(r, r, d.resolution)).join("")}</select></label>
+          <label>Proporção<select data-default="aspectRatio">${["16:9", "9:16", "1:1", "4:3", "3:2", "4:5", "21:9"].map((r) => option(r, r, d.aspectRatio)).join("")}</select></label>
+          <label>FPS<select data-default="fps" data-type="number">${[24, 25, 48, 50].map((r) => option(r, r, d.fps)).join("")}</select></label>
+          <label>Contexto da continuação<select data-default="contextSeconds" data-type="number">${[1, 2, 3, 4, 5].map((r) => option(r, `${r} s`, d.contextSeconds)).join("")}</select></label>
+          <label>Retakes se o juiz reprovar<select data-default="retakes" data-type="number">${[0, 1, 2, 3].map((r) => option(r, r === 0 ? "nenhum" : `até ${r}`, d.retakes)).join("")}</select></label>
+        </div>
+        <div class="row">
+          <label class="check"><input type="checkbox" data-default="audio" ${d.audio ? "checked" : ""}> Gerar áudio</label>
+          <label class="check"><input type="checkbox" data-default="review" ${d.review ? "checked" : ""}> Revisar a continuidade</label>
+          <label class="check"><input type="checkbox" data-default="judge" ${d.judge ? "checked" : ""}> Juiz depois de cada bloco</label>
+        </div>
+      </section>
     </div>
-    ${running ? `<div class="hint ai-running"><span class="spinner" aria-hidden="true"></span><p class="ai-progress">${aiProgress(t)}</p></div>` : ""}
-    ${t?.status === "error" ? `<pre class="error">${esc(t.error)}</pre>` : ""}
-  </section>`;
+    <div class="modal-foot"><button class="btn ghost" data-action="close-settings">Cancelar</button><button class="btn primary" data-action="save-settings">Salvar</button></div>
+  </div>`;
 }
 
 function aiProgress(t) {
@@ -960,118 +1096,34 @@ setInterval(() => {
   if (t?.status === "running" && line) line.innerHTML = aiProgress(t);
 }, 1000);
 
-function llmModal() {
-  const p = state.project;
-  const l = state.llm;
-  const res = l.result;
-  return `<div class="modal wide" role="dialog" aria-label="Roteiro com LLM">
-    <div class="modal-head"><h2>Roteiro com LLM</h2><button class="icon-btn" data-action="close-modal" title="Fechar">✕</button></div>
-    <div class="steps">
-      ${aiSection()}
-      <section>
-        <details ${l.manual ? "open" : ""} data-toggle="llm-manual">
-          <summary><strong>Ou faça em outra LLM, sem chave de API</strong> <span class="muted small">(ChatGPT, Claude, Gemini… copiando e colando)</span></summary>
-          <h4>Baixe o arquivo do projeto</h4>
-          <p class="hint">Contém o pré-prompt, os personagens, os fundos, as cenas existentes, as regras do LTX (blocos de até 20 s) e o formato de resposta.</p>
-          <a class="btn" href="/api/projects/${p.id}/llm-brief" download>Baixar ${esc(l.fileName || "arquivo do projeto")}</a>
-          <h4>Copie as instruções para a LLM</h4>
-          <label>O que acontece na cena<textarea data-focus="llm-request" data-llm="request" rows="3" placeholder="Ex.: Ana chega à cafeteria na chuva, procura Bruno, os dois discutem e ela sai sem pedir nada.">${esc(l.request)}</textarea></label>
-          <div class="form-row">
-            <label class="inline">Duração total <input type="number" min="2" data-focus="llm-seconds" data-llm="seconds" value="${esc(l.seconds)}" placeholder="ex. 90"> s</label>
-            <label class="check"><input type="checkbox" data-change="llm-inline" ${l.inline ? "checked" : ""}> Incluir o arquivo no texto (para LLMs sem anexo)</label>
-          </div>
-          <textarea class="mono" readonly rows="${l.inline ? 10 : 7}" data-focus="llm-text">${esc(l.text)}</textarea>
-          <button class="btn primary" data-action="copy-llm">Copiar instruções</button>
-        </details>
-      </section>
-      <section>
-        <h3><span class="step">2</span> Revise e importe o roteiro</h3>
-        <textarea class="mono" data-focus="llm-script" data-llm="script" rows="7" placeholder='O roteiro gerado aparece aqui. Você também pode colar a resposta de outra LLM (o JSON com "format": "takes.scene-script")'>${esc(l.script)}</textarea>
-        <div class="row">
-          <button class="btn" data-action="llm-open-file">Abrir arquivo .json…</button>
-          <button class="btn" data-action="llm-validate">Validar</button>
-          <select data-change="llm-target">${option("", res && res.scenes.length > 1 ? `Adicionar como ${res.scenes.length} novas cenas` : "Adicionar como nova cena", l.target)}${p.scenes.map((s) => option(s.id, `Substituir: ${s.title}`, l.target)).join("")}</select>
-          <button class="btn primary" data-action="llm-import">Importar</button>
-          <button class="btn" data-action="llm-import-film" title="Importa e já põe tudo na fila: gera as cenas, une o filme e escreve o relatório">Importar e gerar o filme</button>
-        </div>
-        ${l.error ? `<pre class="error">${esc(l.error)}</pre>` : ""}
-        ${
-          res
-            ? `<div class="card inset">${res.scenes.length > 1 ? `<p class="muted small">${res.scenes.length} cenas · ${res.scenes.reduce((n, s) => n + s.blocks.length, 0)} blocos · ${fmtTime(res.scenes.reduce((n, s) => n + sceneSeconds(s), 0))}</p>` : ""}${res.scenes
-                .map(
-                  (s) => `<strong>${esc(s.title)}</strong> — ${s.blocks.length} blocos, ${fmtTime(sceneSeconds(s))}
-                  <ol class="script-preview">${s.blocks.map((b, i) => `<li><span class="pill">${b.duration}s · ${scriptContinuity(s, b, i)}</span> ${esc(b.prompt.slice(0, 180))}${b.prompt.length > 180 ? "…" : ""}${b.note ? `<br><small class="muted">${esc(b.note)}</small>` : ""}</li>`).join("")}</ol>`,
-                )
-                .join("")}${res.warnings.length ? `<ul class="warn">${res.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}</div>`
-            : ""
-        }
-      </section>
-    </div>
-  </div>`;
-}
-
-function aiKeysModal(m) {
-  const providers = state.ai.settings?.providers ?? [];
-  return `<div class="modal" role="dialog" aria-label="Chaves de API">
-    <div class="modal-head"><h2>Chaves de API</h2><button class="icon-btn" data-action="close-ai-keys" title="Fechar">✕</button></div>
-    <div class="steps">
-      <p class="hint">Cadastre uma ou mais. As chaves ficam só neste Mac, na biblioteca do Takes, e valem para todos os projetos. Cada geração é cobrada na sua conta do provedor.</p>
-      ${providers
-        .map(
-          (p) => `<section>
-          <h3>${esc(p.name)}</h3>
-          <div class="row">
-            <input type="password" autocomplete="off" spellcheck="false" class="mono grow" data-focus="ai-key-${p.id}" data-ai-key="${p.id}" value="${esc(m.keys[p.id] ?? "")}" placeholder="${p.configured ? `Salva (${esc(p.hint)}). Cole outra para trocar.` : "Cole a chave aqui"}">
-            ${p.configured ? `<button class="btn ghost danger small" data-action="remove-ai-key" data-id="${p.id}">Remover</button>` : ""}
-          </div>
-          <p class="hint"><a href="${esc(p.keyUrl)}" target="_blank" rel="noopener">Criar uma chave</a></p>
-        </section>`,
-        )
-        .join("")}
-    </div>
-    <div class="modal-foot"><button class="btn ghost" data-action="close-ai-keys">Cancelar</button><button class="btn primary" data-action="save-ai-keys">Salvar</button></div>
-  </div>`;
-}
-
-let llmTimer = null;
-function refreshLlmText() {
-  clearTimeout(llmTimer);
-  llmTimer = setTimeout(async () => {
-    try {
-      const r = await api("POST", `/api/projects/${state.project.id}/llm-prompt`, { request: state.llm.request, seconds: state.llm.seconds, inline: state.llm.inline });
-      state.llm.text = r.text;
-      state.llm.fileName = r.fileName;
-      const el = document.querySelector('[data-focus="llm-text"]');
-      if (el) el.value = r.text;
-      else render();
-    } catch (e) {
-      fail(e);
-    }
-  }, 250);
-}
 
 // Campos de formulários locais (não salvos no projeto).
 document.addEventListener("input", (e) => {
   const el = e.target;
-  if (el.dataset.llm) {
-    state.llm[el.dataset.llm] = el.value;
-    if (el.dataset.llm === "request" || el.dataset.llm === "seconds") refreshLlmText();
-    else if (el.dataset.llm === "script") {
-      state.llm.result = null;
-      state.llm.error = null;
-    }
-  }
-  if (el.dataset.aiKey && state.modal?.type === "ai-keys") state.modal.keys[el.dataset.aiKey] = el.value;
+  if (el.dataset.llm) state.llm[el.dataset.llm] = el.value;
+  if (el.dataset.aiKey && state.modal?.type === "settings") state.modal.keys[el.dataset.aiKey] = el.value;
   if (el.dataset.pf) state.previewForm[el.dataset.pf] = el.value;
   if (el.dataset.focus === "avatar-prompt" && state.modal) state.modal.avatarPrompt = el.value;
   if (el.dataset.focus === "avatar-from" && state.modal) state.modal.fromPhoto = el.checked;
+});
+
+// Configurações: modelos, esforço e padrões de projeto novo ficam no rascunho até salvar.
+document.addEventListener("change", (e) => {
+  const el = e.target;
+  const m = state.modal;
+  if (m?.type !== "settings") return;
+  if (el.dataset.settings) m[el.dataset.settings] = el.value;
+  if (el.dataset.default) {
+    const v = el.type === "checkbox" ? el.checked : el.dataset.type === "number" ? Number(el.value) : el.value;
+    m.defaults = { ...m.defaults, [el.dataset.default]: v };
+  }
 });
 
 // <details> não dispara "input"; guarda se está aberto para sobreviver às renderizações.
 document.addEventListener(
   "toggle",
   (e) => {
-    if (e.target.dataset?.toggle === "llm-manual") state.llm.manual = e.target.open;
+    if (e.target.dataset?.toggle === "scene-setup") state.sceneSetupOpen = e.target.open;
   },
   true,
 );
@@ -1407,23 +1459,49 @@ const actions = {
   "open-llm"() {
     state.modal = { type: "llm" };
     render();
-    refreshLlmText();
+    loadAi().catch(fail);
+  },
+  "open-settings"() {
+    const a = state.ai.settings ?? {};
+    state.modal = {
+      type: "settings",
+      back: state.modal?.type === "llm" ? "llm" : null,
+      keys: {},
+      model: modelKey(a.model),
+      effort: a.effort ?? "high",
+      reviewModel: modelKey(a.reviewModel),
+      reviewEffort: a.reviewEffort ?? "medium",
+      defaults: { ...(a.defaults ?? {}) },
+    };
+    render();
     loadAi().catch(fail);
   },
   "open-ai-keys"() {
-    state.modal = { type: "ai-keys", keys: {}, back: state.modal?.type === "llm" ? "llm" : null };
-    render();
+    actions["open-settings"]();
   },
-  "close-ai-keys"() {
+  "close-settings"() {
     state.modal = state.modal?.back ? { type: state.modal.back } : null;
     render();
   },
-  async "save-ai-keys"() {
-    const keys = Object.fromEntries(Object.entries(state.modal.keys).filter(([, v]) => v.trim()));
-    if (Object.keys(keys).length) state.ai.settings = await api("PUT", "/api/ai", { keys });
-    actions["close-ai-keys"]();
-    await loadAi({ refresh: true });
-    if (Object.keys(keys).length) toast(state.ai.errors.length ? "Chave salva, mas o provedor recusou. Veja a mensagem no assistente." : "Chave salva.", state.ai.errors.length ? "error" : "info");
+  async "save-settings"() {
+    const m = state.modal;
+    const ref = (v) => {
+      if (!v) return null;
+      const [provider, ...id] = v.split(":");
+      return { provider, id: id.join(":") };
+    };
+    const keys = Object.fromEntries(Object.entries(m.keys).filter(([, v]) => v.trim()));
+    const newKey = Object.keys(keys).length > 0;
+    state.ai.settings = await api("PUT", "/api/ai", { ...(newKey ? { keys } : {}), model: ref(m.model), effort: m.effort, reviewModel: ref(m.reviewModel), reviewEffort: m.reviewEffort, defaults: m.defaults });
+    if (newKey) {
+      // Com chave nova, a lista de modelos muda: continua aberto para escolher o modelo.
+      m.keys = {};
+      await loadAi({ refresh: true });
+      if (!state.ai.errors.length && !m.model && state.ai.models.length) return toast("Chave salva. Agora escolha o modelo do roteiro.");
+      if (state.ai.errors.length) return toast("Chave salva, mas o provedor recusou. Veja a mensagem.", "error");
+    }
+    actions["close-settings"]();
+    toast("Configurações salvas.");
   },
   async "remove-ai-key"({ id }) {
     state.ai.settings = await api("PUT", "/api/ai", { keys: { [id]: "" } });
@@ -1434,60 +1512,24 @@ const actions = {
   },
   async "ai-generate"() {
     const l = state.llm;
-    const [provider, ...rest] = l.model.split(":");
-    if (!provider) return toast("Escolha o modelo.", "error");
     if (!l.fullScript.trim()) return toast("Cole o roteiro completo.", "error");
+    if (l.mode === "replace" && !confirm(`Substituir as ${state.project.scenes.length} cenas atuais pelas cenas geradas? Os vídeos já gerados continuam na pasta de saída.`)) return;
     await saveNow();
-    l.task = await api("POST", `/api/projects/${state.project.id}/ai-script`, { script: l.fullScript, seconds: Number(l.fullSeconds) || null, provider, model: rest.join(":") });
+    l.task = await api("POST", `/api/projects/${state.project.id}/ai-script`, { script: l.fullScript, seconds: Number(l.fullSeconds) || null, mode: l.mode, film: l.film });
+    render();
+  },
+  "goto-imported"() {
+    const id = state.llm.task?.imported?.sceneIds?.[0];
+    if (id) state.sceneId = id;
+    state.tab = "scenes";
+    state.modal = null;
     render();
   },
   async "ai-cancel"() {
     if (state.llm.task) await api("POST", `/api/ai-script/${state.llm.task.id}/cancel`, {});
   },
-  async "copy-llm"() {
-    await copyText(state.llm.text);
-    toast("Instruções copiadas. Cole na LLM junto com o arquivo.");
-  },
-  async "llm-open-file"() {
-    const file = await pickFile("application/json,.json,.txt");
-    if (!file) return;
-    state.llm.script = await file.text();
-    await actions["llm-validate"]();
-  },
-  async "llm-validate"() {
-    try {
-      state.llm.result = await api("POST", `/api/projects/${state.project.id}/import-script`, { text: state.llm.script, validateOnly: true });
-      state.llm.error = null;
-    } catch (e) {
-      state.llm.result = null;
-      state.llm.error = e.message;
-    }
-    render();
-  },
-  async "llm-import-film"() {
-    await actions["llm-import"]({ film: true });
-  },
-  async "llm-import"({ film = false } = {}) {
-    await saveNow();
-    try {
-      const r = await api("POST", `/api/projects/${state.project.id}/import-script`, { text: state.llm.script, replaceSceneId: state.llm.target || null });
-      state.project = r.project;
-      state.sceneId = r.sceneIds[0];
-      state.tab = "scenes";
-      state.modal = null;
-      if (state.llm.task) state.ai.imported.add(state.llm.task.id);
-      state.llm = { ...state.llm, script: "", result: null, error: null, target: "" };
-      await loadProjects();
-      render();
-      toast(r.warnings.length ? `Roteiro importado com ${r.warnings.length} aviso(s).` : "Roteiro importado.");
-      if (film === true) await generateFilm();
-    } catch (e) {
-      state.llm.error = e.message;
-      render();
-    }
-  },
   "close-modal"() {
-    if (state.modal?.type === "ai-keys") return actions["close-ai-keys"]();
+    if (state.modal?.type === "settings") return actions["close-settings"]();
     state.modal = null;
     render();
   },
@@ -1570,16 +1612,11 @@ const changes = {
     toast(`Imagem inicial de "${s.title}" atualizada.`);
     render();
   },
-  "llm-inline"(el) {
-    state.llm.inline = el.checked;
-    refreshLlmText();
-    render();
+  "llm-mode"(el) {
+    state.llm.mode = el.value;
   },
-  "llm-target"(el) {
-    state.llm.target = el.value;
-  },
-  "llm-model"(el) {
-    state.llm.model = el.value;
+  "llm-film"(el) {
+    state.llm.film = el.checked;
   },
 };
 
@@ -1653,12 +1690,9 @@ async function loadAi({ refresh = false } = {}) {
     const r = await api("GET", `/api/ai/models${refresh ? "?refresh=1" : ""}`);
     state.ai.models = r.models;
     state.ai.errors = r.errors;
-    const saved = state.ai.settings.model;
-    const has = (v) => r.models.some((m) => `${m.provider}:${m.id}` === v);
-    if (!has(state.llm.model)) state.llm.model = saved && has(`${saved.provider}:${saved.id}`) ? `${saved.provider}:${saved.id}` : "";
     if (state.project && !state.llm.task) {
       const tasks = await api("GET", `/api/projects/${state.project.id}/ai-script`);
-      if (tasks[0] && !state.ai.imported.has(tasks[0].id)) applyAiTask(tasks[0]);
+      if (tasks[0]) applyAiTask(tasks[0]);
     }
   } finally {
     state.ai.loading = false;
@@ -1670,17 +1704,22 @@ function applyAiTask(task) {
   const l = state.llm;
   const before = l.task?.status;
   l.task = task;
-  if (task.status === "complete" && before !== "complete") {
-    l.script = task.text;
-    l.target = "";
-    actions["llm-validate"]().catch(fail);
-    toast("Roteiro gerado. Revise e importe.");
-  }
-  // Resposta que não passou na validação: fica no campo para corrigir à mão.
-  if (task.status === "error" && task.text && before !== "error") {
-    l.script = task.text;
-    l.result = null;
-    l.error = null;
+  if (task.status === "complete" && before === "running" && task.imported) {
+    // O servidor já importou: troca o projeto inteiro (com "substituir", as cenas antigas somem).
+    // Sem salvar antes: o rascunho local ainda tem as cenas antigas e as traria de volta.
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    api("GET", `/api/projects/${task.projectId}`)
+      .then((fresh) => {
+        if (state.project?.id !== fresh.id) return;
+        state.project = fresh;
+        state.sceneId = task.imported.sceneIds[0] ?? state.sceneId;
+        render();
+        loadProjects().catch(() => {});
+      })
+      .catch(fail);
+    l.fullScript = "";
+    toast(`${task.imported.scenes} cena(s) importada(s).${task.imported.film && !task.imported.film.error ? " O filme está na fila." : ""}`);
   }
 }
 
@@ -1787,9 +1826,7 @@ async function pollLtx() {
   if (last && state.projects.some((p) => p.id === last)) await openProject(last);
   else render();
   connectEvents();
-  api("GET", "/api/ai")
-    .then((settings) => ((state.ai.settings = settings), render()))
-    .catch(() => {});
+  loadAi().catch(() => {});
   pollLtx();
   setInterval(pollLtx, 15000);
 })();

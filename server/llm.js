@@ -1,4 +1,4 @@
-// Arquivo de projeto para LLMs e importação do roteiro gerado.
+// Pedido do roteiro automático à LLM (com o projeto e as regras de continuidade) e importação do roteiro.
 import { normalizeScene, newId, CONTINUITY } from "./store.js";
 
 export const BRIEF_FORMAT = "takes.llm-brief";
@@ -23,27 +23,11 @@ export const CONTINUITY_RULES = `How Takes chains blocks (continuity errors are 
 - Dialogue must fit its block: about 2.5 spoken words per second at most (a 6-second block holds about 15 words). Split long lines across blocks.
 - Before answering, review the blocks in order: track the framing each block ends with and the state of every object that changed. Make sure every "continue" or "frame" block starts in the framing the previous one ends with, every "cut" has a "start" whose image matches the new shot and the current state, and every block where the state differs has it in "state".`;
 
-const LLM_INSTRUCTIONS = `You are a screenwriter and prompt writer for LTX, a local text/image-to-video model.
-Write the complete script of ONE scene for the video project described in "project", split into consecutive blocks.
-
-Hard rules:
-1. Each block is at most 20 seconds and at least 3 seconds ("duration", integer seconds). LTX cannot render longer clips, so long actions must be split across several blocks.
-2. Blocks play back to back and must feel like one continuous scene. Block 1 opens the scene as chosen by the scene "start" (see the continuity rules). For each later block choose "continuity" ("continue", "frame" or "cut") and, for a "cut", its "start", following the continuity rules below.
-3. "prompt" is what LTX will render for that block, written in English as one paragraph of 3 to 7 sentences, present tense, in chronological order: who is in frame, what they do, how they move, the camera (framing, lens, movement), the lighting and the mood. Describe only what is visible or audible during that block. No lists, no markdown, no scene numbers, no "Block 2" references.
-4. The project pre-prompt (style, look, rules) is added automatically before every prompt, and the appearance and wardrobe of each listed character are added automatically too. Do not repeat them; refer to characters by name and describe only what changes (expression, pose, action).
-5. Use only characters and backgrounds that exist in "project" and refer to them by their "id" in "characterIds" and "backgroundId". "characterIds" in a block lists who appears in that block; omit it to use the scene cast.
-6. Keep continuity explicit: the end of a block's prompt should leave characters where the next block picks them up.
-7. Respect the requested total length of the scene when the user gives one; the sum of block durations is the scene length.
-8. Reply with ONLY a JSON object that matches "responseFormat.example" exactly (same keys), with no comments and no text before or after it.
-
-${CONTINUITY_RULES}`;
-
 export function buildBrief(project) {
   return {
     format: BRIEF_FORMAT,
     version: 1,
     generatedAt: new Date().toISOString(),
-    instructions: LLM_INSTRUCTIONS,
     limits: { minBlockSeconds: 3, maxBlockSeconds: 20, wordsPerSecond: 2.5, continuity: CONTINUITY, cutStart: ["keyframe", "block:N", "scene", "background:<id>", "none"], sceneStart: ["background", "previous", "keyframe", "none"] },
     project: {
       name: project.name,
@@ -104,7 +88,7 @@ Hard rules:
 7. Use only characters and backgrounds that exist in "project" and refer to them by their "id" in "characterIds" and "backgroundId". "characterIds" in a block lists who appears in that block; omit it to use the scene cast. A person in the script who is not a project character is described in the prompt text and not listed in "characterIds". Use "backgroundId": null when no background fits.
 8. Keep continuity explicit: the end of a block's prompt should leave characters where the next block picks them up.
 9. When the user gives a total length, the sum of all block durations of all scenes should be close to it. Otherwise pace the blocks to the script (an action or a line usually takes 4 to 10 seconds).
-10. "title" and "synopsis" of each scene are written in the language of the script.
+10. "title", "synopsis" and "note" are written in the same language as the script the user gives (for a script in Portuguese, write them in Portuguese), even though every "prompt", "state" and "opening" is in English.
 11. Reply with ONLY a JSON object that matches "responseFormat.example" exactly (same keys), with no comments and no text before or after it.
 
 ${CONTINUITY_RULES}`;
@@ -114,7 +98,6 @@ export function fullScriptRequest(project, { script = "", seconds = null } = {})
   const brief = buildBrief(project);
   const [first, second, third, fourth] = brief.responseFormat.example.scene.blocks;
   const example = brief.responseFormat.example.scene;
-  delete brief.instructions;
   brief.responseFormat = {
     description: "Return exactly this structure, with one entry in \"scenes\" per scene of the script. Every block needs duration and prompt.",
     example: {
@@ -136,23 +119,6 @@ export function fullScriptRequest(project, { script = "", seconds = null } = {})
 // Pede à LLM para corrigir um roteiro que não passou na validação.
 export function repairRequest(errors) {
   return `Your reply could not be imported. Problems:\n${errors.map((e) => `- ${e}`).join("\n")}\n\nReply again with the complete corrected JSON (all scenes and blocks), with no text before or after it.`;
-}
-
-// Texto que o usuário cola no chat da LLM junto com o arquivo.
-export function userPrompt(project, { request = "", seconds = null, fileName = "projeto.json", inline = false, brief = null }) {
-  const lines = [
-    `Anexei o arquivo "${fileName}" com o projeto de vídeo "${project.name}".`,
-    `Siga as instruções do campo "instructions" e escreva o roteiro completo de UMA cena, dividido em blocos de no máximo 20 segundos.`,
-    `Responda somente com o JSON no formato de "responseFormat.example" (format "${SCRIPT_FORMAT}"), sem texto antes ou depois.`,
-    "",
-    `Cena: ${request.trim() || "[descreva aqui o que acontece na cena]"}`,
-  ];
-  if (seconds) lines.push(`Duração total desejada: cerca de ${seconds} segundos.`);
-  if (inline && brief) {
-    lines[0] = `Abaixo está o arquivo JSON com o projeto de vídeo "${project.name}".`;
-    lines.push("", "```json", JSON.stringify(brief, null, 2), "```");
-  }
-  return lines.join("\n");
 }
 
 // Aceita JSON puro, dentro de bloco de código ou com texto em volta.
@@ -273,7 +239,7 @@ export function parseScript(project, input, { strict = false } = {}) {
         ? b.characterIds.map((c) => resolveRef(project.characters, c, "personagem", errors, at)).filter(Boolean)
         : null;
       const text = (v) => (typeof v === "string" ? v.trim() : "");
-      return { id: newId(), title: text(b?.title), prompt: String(b?.prompt ?? "").trim(), duration, continuity, start, note: text(b?.note), state: text(b?.state), opening: text(b?.opening), characterIds: blockCast };
+      return { id: newId(), title: text(b?.title), prompt: String(b?.prompt ?? "").trim(), duration, continuity, start, note: text(b?.note), currentState: text(b?.state), opening: text(b?.opening), characterIds: blockCast };
     });
     // "block:N" vira o id do bloco N, que só existe depois de criar todos os blocos.
     const blockRef = (ref) => (ref?.kind === "block" ? { kind: "block", id: blocks[ref.number - 1].id } : ref);

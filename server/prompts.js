@@ -50,7 +50,7 @@ function setting(project, scene, block = null) {
 }
 
 function current(block) {
-  return clean(block?.state) ? `Current state: ${sentence(block.state)}` : "";
+  return clean(block?.currentState) ? `Current state: ${sentence(block.currentState)}` : "";
 }
 
 function cast(characters) {

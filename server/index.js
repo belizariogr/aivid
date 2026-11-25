@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { Store, findScene, selectedTake, blockState, slug, newId, normalizeCharacter } from "./store.js";
 import { LtxClient } from "./ltx.js";
 import { JobQueue, sceneFolder, attention } from "./jobs.js";
-import { buildBrief, userPrompt, parseScript } from "./llm.js";
+import { parseScript } from "./llm.js";
 import { AiSettings, ScriptWriter } from "./ai.js";
 import { ContinuityReviewer } from "./review.js";
 import * as media from "./media.js";
@@ -35,6 +35,42 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
     onChange: (jobs) => broadcast("jobs", jobs),
     reviewer: new ContinuityReviewer({ settings: aiSettings, writer, media: mediaLib, fetchImpl }),
   });
+  // Cenas novas no fim do projeto, no lugar de uma cena (`replaceSceneId`) ou no lugar de todas
+  // (`mode: "replace"`; os vídeos continuam na pasta de saída).
+  const busy = (id) => queue.jobs.some((j) => j.projectId === id && ["queued", "running"].includes(j.status) && ["video", "film"].includes(j.kind));
+  function checkImport(id, { mode } = {}) {
+    if (mode === "replace" && busy(id))
+      throw Object.assign(new Error("Há cenas deste projeto na fila. Cancele ou espere terminar antes de substituir todas as cenas."), { status: 409 });
+  }
+  function importScenes(id, scenes, { mode = "append", replaceSceneId = null } = {}) {
+    checkImport(id, { mode });
+    return store.update(id, (p) => {
+      if (mode === "replace") p.scenes = scenes;
+      else if (replaceSceneId) {
+        const at = p.scenes.findIndex((s) => s.id === replaceSceneId);
+        if (at < 0) throw Object.assign(new Error("Cena a substituir não encontrada."), { status: 404 });
+        const old = p.scenes[at];
+        scenes[0].id = old.id;
+        scenes[0].start = old.start.kind !== "none" ? old.start : scenes[0].start;
+        p.scenes.splice(at, 1, ...scenes);
+      } else p.scenes.push(...scenes);
+    });
+  }
+  writer.checkImport = checkImport;
+  writer.importer = (id, data, { mode, film }) => {
+    const { scenes, warnings } = parseScript(store.get(id), data);
+    importScenes(id, scenes, { mode });
+    const imported = { sceneIds: scenes.map((s) => s.id), scenes: scenes.length, blocks: scenes.reduce((n, s) => n + s.blocks.length, 0), mode, warnings, film: null };
+    if (film) {
+      try {
+        const r = queue.addFilm(id);
+        imported.film = { scenes: r.added.length };
+      } catch (error) {
+        imported.film = { error: error.message };
+      }
+    }
+    return imported;
+  };
   let onShutdown = () => {};
   const originalSave = store.save.bind(store);
   store.save = (project) => {
@@ -85,7 +121,8 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
   route("GET", "/api/projects", () =>
     store.list().map((p) => ({ id: p.id, name: p.name, updatedAt: p.updatedAt, scenes: p.scenes.length, characters: p.characters.length })),
   );
-  route("POST", "/api/projects", ({ body }) => view(store.create(body.name)));
+  // Um projeto novo começa com os padrões das Configurações.
+  route("POST", "/api/projects", ({ body }) => view(store.create(body.name, aiSettings.data.defaults)));
   route("GET", "/api/projects/:id", ({ id }) => view(store.get(id)));
   route("PUT", "/api/projects/:id", ({ id, body }) => view(store.edit(id, body)));
   route("DELETE", "/api/projects/:id", ({ id }) => (store.remove(id), { ok: true }));
@@ -299,36 +336,16 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
     }));
   });
 
-  route("GET", "/api/projects/:id/llm-brief", ({ id }) => {
-    const project = store.get(id);
-    return { __download: `${slug(project.name, "projeto")}.takes-llm.json`, body: buildBrief(project) };
-  });
-  route("POST", "/api/projects/:id/llm-prompt", ({ id, body }) => {
-    const project = store.get(id);
-    const fileName = `${slug(project.name, "projeto")}.takes-llm.json`;
-    const brief = body.inline ? buildBrief(project) : null;
-    return { text: userPrompt(project, { request: String(body.request || ""), seconds: Number(body.seconds) || null, fileName, inline: Boolean(body.inline), brief }), fileName };
-  });
+  // Importa um roteiro (JSON no formato takes.scene-script). O assistente de roteiro importa sozinho
+  // quando a geração termina; esta rota serve para reimportar uma resposta salva.
   route("POST", "/api/projects/:id/import-script", ({ id, body }) => {
-    const project = store.get(id);
-    const { scenes, warnings } = parseScript(project, body.text ?? body.script);
+    const { scenes, warnings } = parseScript(store.get(id), body.text ?? body.script);
     if (body.validateOnly) return { scenes, warnings };
-    const updated = store.update(id, (p) => {
-      if (body.replaceSceneId) {
-        const at = p.scenes.findIndex((s) => s.id === body.replaceSceneId);
-        if (at < 0) throw Object.assign(new Error("Cena a substituir não encontrada."), { status: 404 });
-        const old = p.scenes[at];
-        scenes[0].id = old.id;
-        scenes[0].start = old.start.kind !== "none" ? old.start : scenes[0].start;
-        p.scenes.splice(at, 1, ...scenes);
-      } else {
-        p.scenes.push(...scenes);
-      }
-    });
+    const updated = importScenes(id, scenes, { mode: body.mode, replaceSceneId: body.replaceSceneId });
     return { project: view(updated), sceneIds: scenes.map((s) => s.id), warnings };
   });
 
-  // Chaves de API (ficam só neste Mac, fora dos projetos) e roteiro gerado automaticamente.
+  // Configurações gerais (ficam só neste Mac, fora dos projetos) e roteiro gerado automaticamente.
   route("GET", "/api/ai", () => aiSettings.view());
   route("PUT", "/api/ai", ({ body }) => {
     const view = aiSettings.update(body);
@@ -337,10 +354,7 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
   });
   route("GET", "/api/ai/models", ({ query }) => writer.listModels({ refresh: query.get("refresh") === "1" }));
   route("GET", "/api/projects/:id/ai-script", ({ id }) => writer.list(id));
-  route("POST", "/api/projects/:id/ai-script", ({ id, body }) => {
-    if (body.provider && body.model) aiSettings.update({ model: { provider: body.provider, id: body.model } });
-    return writer.start(id, body);
-  });
+  route("POST", "/api/projects/:id/ai-script", ({ id, body }) => writer.start(id, body));
   route("POST", "/api/ai-script/:tid/cancel", ({ tid }) => writer.cancel(tid));
 
   route("POST", "/api/pick-folder", async ({ body }) => {

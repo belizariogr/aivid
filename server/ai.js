@@ -1,6 +1,6 @@
 // Roteiro automático por API: chaves dos provedores, modelos disponíveis e geração em segundo plano.
 import fs from "node:fs";
-import { newId } from "./store.js";
+import { newId, normalizeSettings } from "./store.js";
 import { fullScriptRequest, repairRequest, parseScript, extractJson } from "./llm.js";
 
 export const PROVIDERS = {
@@ -20,16 +20,29 @@ const OPENAI_SKIP = /(audio|realtime|tts|transcribe|image|search|embedding|moder
 
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const modelRef = (m) => (m && PROVIDERS[m.provider] && typeof m.id === "string" && m.id ? { provider: m.provider, id: m.id } : null);
+const effortOf = (v, fallback) => (EFFORTS.includes(v) ? v : fallback);
+
+// Configurações gerais do Takes (valem para todos os projetos): chaves de API, o modelo e o esforço
+// do roteiro, o modelo e o esforço da revisão e do juiz, e os padrões de um projeto novo.
 export class AiSettings {
   constructor(file) {
     this.file = file;
-    this.data = { keys: {}, model: null };
+    let raw = {};
     try {
-      const raw = JSON.parse(fs.readFileSync(file, "utf8"));
-      this.data = { keys: raw.keys && typeof raw.keys === "object" ? raw.keys : {}, model: raw.model ?? null };
+      raw = JSON.parse(fs.readFileSync(file, "utf8"));
     } catch {
       /* ainda não configurado */
     }
+    this.data = {
+      keys: raw.keys && typeof raw.keys === "object" ? raw.keys : {},
+      model: modelRef(raw.model),
+      effort: effortOf(raw.effort, "high"),
+      reviewModel: modelRef(raw.reviewModel),
+      reviewEffort: effortOf(raw.reviewEffort, "medium"),
+      defaults: normalizeSettings(raw.defaults ?? {}),
+    };
   }
 
   key(provider) {
@@ -44,10 +57,21 @@ export class AiSettings {
         return { id, name: p.name, keyUrl: p.keyUrl, configured: Boolean(key), hint: key ? `…${key.slice(-4)}` : "" };
       }),
       model: this.data.model,
+      effort: this.data.effort,
+      reviewModel: this.data.reviewModel,
+      reviewEffort: this.data.reviewEffort,
+      defaults: this.data.defaults,
+      efforts: EFFORTS,
     };
   }
 
-  update({ keys, model } = {}) {
+  // Modelo da revisão e do juiz: o próprio, ou o do roteiro.
+  supervisor() {
+    const m = this.data.reviewModel && this.key(this.data.reviewModel.provider) ? this.data.reviewModel : this.data.model;
+    return m && this.key(m.provider) ? m : null;
+  }
+
+  update({ keys, model, effort, reviewModel, reviewEffort, defaults } = {}) {
     if (keys && typeof keys === "object") {
       for (const [id, value] of Object.entries(keys)) {
         if (!PROVIDERS[id] || typeof value !== "string") continue;
@@ -56,10 +80,13 @@ export class AiSettings {
         else delete this.data.keys[id];
       }
     }
-    if (model !== undefined) {
-      this.data.model = model && PROVIDERS[model.provider] && typeof model.id === "string" ? { provider: model.provider, id: model.id } : null;
-    }
+    if (model !== undefined) this.data.model = modelRef(model);
+    if (reviewModel !== undefined) this.data.reviewModel = modelRef(reviewModel);
+    if (effort !== undefined) this.data.effort = effortOf(effort, this.data.effort);
+    if (reviewEffort !== undefined) this.data.reviewEffort = effortOf(reviewEffort, this.data.reviewEffort);
+    if (defaults && typeof defaults === "object") this.data.defaults = normalizeSettings({ ...this.data.defaults, ...defaults });
     if (this.data.model && !this.key(this.data.model.provider)) this.data.model = null;
+    if (this.data.reviewModel && !this.key(this.data.reviewModel.provider)) this.data.reviewModel = null;
     const tmp = `${this.file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, this.file);
@@ -109,6 +136,7 @@ async function anthropicModels(key, fetchImpl) {
     maxTokens: Number(m.max_tokens) || null,
     adaptive: Boolean(m.capabilities?.thinking?.types?.adaptive?.supported),
     effort: Boolean(m.capabilities?.effort?.high?.supported),
+    efforts: EFFORTS.filter((level) => m.capabilities?.effort?.[level]?.supported),
   }));
 }
 
@@ -135,7 +163,13 @@ async function streamAnthropic({ key, model, system, messages, signal, onText, f
   // Sem "summarized", os modelos novos pensam em silêncio (display "omitted"): nenhum texto chega
   // durante o planejamento e a interface parece travada.
   if (model.adaptive) body.thinking = { type: "adaptive", display: "summarized" };
-  if (model.effort) body.output_config = { effort };
+  // Um nível que o modelo não aceita cai no mais próximo abaixo dele.
+  if (model.effort) {
+    const levels = model.efforts?.length ? model.efforts : EFFORTS;
+    const wanted = EFFORTS.indexOf(effort);
+    const level = levels.includes(effort) ? effort : [...levels].reverse().find((l) => EFFORTS.indexOf(l) <= wanted) ?? levels[0];
+    body.output_config = { effort: level };
+  }
   const headers = anthropicHeaders(key);
   if (ANTHROPIC_FALLBACK.has(model.id)) {
     headers["anthropic-beta"] = "server-side-fallback-2026-07-01";
@@ -187,6 +221,8 @@ async function streamOpenai({ key, model, system, messages, signal, onText, fetc
 }
 
 const STREAM = { anthropic: streamAnthropic, openai: streamOpenai };
+// Tentativas de gerar um roteiro válido (a 1ª e até duas correções).
+const MAX_ATTEMPTS = 3;
 
 // Mensagem do usuário com texto e imagens no formato de cada provedor.
 // `parts`: [{ text }] ou [{ image: { mediaType, data } }] (data em base64).
@@ -271,16 +307,25 @@ export class ScriptWriter {
       throw fail("Já há um roteiro sendo gerado para este projeto.", 409);
   }
 
-  async start(projectId, { script, seconds, provider, model: modelId }) {
+  // Gera as cenas com o modelo das Configurações e, se a resposta passar na validação, já importa
+  // no projeto (`mode`: "append" acrescenta, "replace" troca todas as cenas). Com `film`, põe o
+  // filme completo na fila logo depois.
+  async start(projectId, { script, seconds, mode = "append", film = false }) {
     this.store.get(projectId);
     if (!String(script || "").trim()) throw fail("Cole o roteiro completo.");
+    const chosen = this.settings.data.model;
+    if (!chosen || !this.settings.key(chosen.provider)) throw fail("Escolha o modelo do roteiro em Configurações.");
     this.ensureIdle(projectId);
-    const model = await this.resolveModel(provider, modelId);
+    this.checkImport?.(projectId, { mode });
+    const model = await this.resolveModel(chosen.provider, chosen.id);
     this.ensureIdle(projectId);
+    const provider = chosen.provider;
     const task = {
       id: newId(),
       projectId,
       provider,
+      options: { mode: mode === "replace" ? "replace" : "append", film: Boolean(film) },
+      imported: null,
       model: model.id,
       modelName: model.name || model.id,
       status: "running",
@@ -318,30 +363,35 @@ export class ScriptWriter {
         this.emit(task);
       }
     };
+    let data = null;
     try {
       for (;;) {
-        const text = await STREAM[task.provider]({ key: this.settings.key(task.provider), model, system, messages, signal: task.abort.signal, onText, fetchImpl: this.fetch });
-        // A resposta fica disponível mesmo com erro, para o usuário corrigir à mão.
+        const text = await STREAM[task.provider]({ key: this.settings.key(task.provider), model, system, messages, signal: task.abort.signal, onText, fetchImpl: this.fetch, effort: this.settings.data.effort });
         task.text = text;
         let errors;
         try {
-          const data = extractJson(text);
+          data = extractJson(text);
           parseScript(this.store.get(task.projectId), data, { strict: true });
           task.text = JSON.stringify(data, null, 2);
           break;
         } catch (error) {
           errors = error.details ?? [error.message];
         }
-        // Uma tentativa de correção: devolve os problemas à LLM junto com a resposta anterior.
-        if (task.attempt >= 2) throw fail(`O roteiro gerado ainda tem problemas:\n${errors.join("\n")}`, 422);
+        // Até duas correções: devolve os problemas à LLM junto com a resposta anterior.
+        if (task.attempt >= MAX_ATTEMPTS) throw fail(`O roteiro gerado ainda tem problemas depois de ${MAX_ATTEMPTS} tentativas:\n${errors.join("\n")}`, 422);
         task.attempt += 1;
         task.phase = "Enviando os problemas para o modelo corrigir…";
         task.thought = "";
         this.emit(task);
         messages.push({ role: "assistant", content: text }, { role: "user", content: repairRequest(errors) });
       }
+      if (this.importer) {
+        task.phase = "Importando as cenas…";
+        this.emit(task);
+        task.imported = await this.importer(task.projectId, data, task.options);
+      }
       task.status = "complete";
-      task.phase = "Pronto";
+      task.phase = task.imported ? "Cenas importadas" : "Pronto";
     } catch (error) {
       task.status = task.abort.signal.aborted ? "canceled" : "error";
       task.error = task.abort.signal.aborted ? "Cancelado." : error.message;

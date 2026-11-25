@@ -47,12 +47,22 @@ Se o app fechar sozinho ou for encerrado à força, vale a primeira opção. Se 
 
 ## Como funciona
 
+### Configurações
+O botão **⚙ Configurações**, no topo, reúne o que vale para todos os projetos:
+
+- **Chaves de API**: Claude (Anthropic) e/ou OpenAI (ChatGPT/Codex).
+- **Modelos de IA**: o do **roteiro** e o da **revisão e do juiz** (pode ser o mesmo ou um mais barato), cada um com seu **esforço** (baixo, médio, alto, muito alto, máximo). Nos modelos Claude, um esforço que o modelo não aceita cai no mais próximo abaixo. Na OpenAI, o esforço é o padrão do modelo.
+- **Padrões de um projeto novo**: resolução, proporção, FPS, contexto da continuação, retakes, áudio, revisão e juiz.
+
+Tudo fica em `~/Library/Application Support/Takes/ai.json`, com permissão só do seu usuário. A interface nunca recebe a chave, só os últimos caracteres.
+
 ### Projeto
+O cabeçalho do projeto tem as duas ações principais: **✦ Gerar cenas com IA** (veja "Roteiro com IA") e **▶ Gerar filme**. A aba Projeto mostra:
+
+- **Andamento**: blocos prontos, **Gerar pendentes**, **Gerar tudo de novo**, o último filme gerado e **Precisa de você**, agrupado por cena.
 - **Pré-prompt**: instruções gerais (estilo, época, lente, luz, regras) que entram antes de todo prompt de vídeo e imagem.
 - **Prompt negativo**, resolução, proporção, FPS, seed, áudio, **contexto da continuação** (segundos do bloco anterior enviados ao LTX), **revisão de continuidade com IA**, **juiz com IA** e **retakes** (veja abaixo).
-- **Gerar o filme completo**: gera o que falta, une o filme e escreve o relatório (veja "Do roteiro ao filme").
 - **Pasta de saída**: escolhida pelo seletor do macOS ou digitada.
-- **Gerar todas as cenas**: põe todas as cenas na fila do LTX, em ordem, e abre a aba Fila. **Só os pendentes** gera apenas os blocos que ainda não têm vídeo.
 - **Novas tentativas**: se um bloco falhar (erro do LTX, conexão que caiu, FFmpeg), ele é gerado de novo até mais duas vezes, com pausas de 5 s e 15 s. Só depois da terceira falha a tarefa para com erro e **Retomar** continua do bloco que falhou. Erros que só você resolve (pasta de saída ausente, bloco anterior sem vídeo) param na hora.
 - **Clonar projeto**: cria uma cópia com pré-prompt, configurações, personagens (com fotos), fundos e cenas. A cópia começa sem vídeos, sem prévias e sem pasta de saída.
 - **Limpar todas as cenas**: apaga as cenas e mantém personagens, fundos e configurações. Os vídeos continuam na pasta de saída, e uma cena nova com o mesmo nome continua a numeração (`_take-2`…) em vez de sobrescrever.
@@ -101,7 +111,7 @@ A imagem inicial do 1º bloco de uma cena pode ser:
 
 #### Juiz com IA e retakes
 
-Opcional, em **Projeto → Juiz com IA depois de cada bloco**, com o modelo de **Chaves de API…**. Depois de cada bloco, a LLM recebe:
+Opcional, em **Projeto → IA durante a geração → Juiz depois de cada bloco**, com o modelo da revisão e do juiz das **Configurações**. Depois de cada bloco, a LLM recebe:
 
 - o primeiro, o do meio e o último quadro do take;
 - o último quadro do bloco anterior;
@@ -124,15 +134,15 @@ No personagem, **Gerar fichas** cria a partir da foto três imagens com o mesmo 
 
 #### Do roteiro ao filme
 
-- **Projeto → Gerar o filme completo** põe na fila os blocos pendentes de todas as cenas. No fim, une tudo em `<pasta de saída>/<projeto>-filme.mp4` e escreve `<projeto>-relatorio.md` com o que precisa de você.
-- No assistente de roteiro, **Importar e gerar o filme** faz o mesmo logo depois de importar.
+- **▶ Gerar filme**, no cabeçalho do projeto, põe na fila os blocos pendentes de todas as cenas. No fim, une tudo em `<pasta de saída>/<projeto>-filme.mp4` e escreve `<projeto>-relatorio.md` com o que precisa de você.
+- No assistente de roteiro, **Depois de importar, gerar o filme** faz o mesmo logo depois de importar as cenas.
 - A aba Projeto mostra **Precisa de você**: blocos sem vídeo, desatualizados, sem arquivo ou reprovados pelo juiz, com link para cada um.
 
-Com a revisão antes, o juiz depois, as aberturas geradas e as fichas dos personagens, o caminho sem interação é: colar o roteiro, **Gerar cenas**, **Importar e gerar o filme** e, no fim, olhar só o que está em **Precisa de você**.
+Com a revisão antes, o juiz depois, as aberturas geradas e as fichas dos personagens, o caminho sem interação é: colar o roteiro, marcar **Depois de importar, gerar o filme**, clicar em **Gerar e importar cenas** e, no fim, olhar só o que está em **Precisa de você**.
 
 #### Revisão de continuidade com IA
 
-Opcional, em **Projeto → Revisar a continuidade com IA antes de cada bloco**. Usa o modelo escolhido em **Chaves de API…**. Antes de gerar cada bloco a partir do 2º, o Takes manda à LLM:
+Opcional, em **Projeto → IA durante a geração → Revisar a continuidade antes de cada bloco**. Usa o modelo da revisão e do juiz das **Configurações**. Antes de gerar cada bloco a partir do 2º, o Takes manda à LLM:
 
 - o plano da cena;
 - o último quadro que o LTX **realmente** gerou em cada bloco anterior (até 8);
@@ -152,45 +162,49 @@ Durações que o LTX não aceita diretamente (por exemplo 7 s) são geradas na d
 ### Prévias
 Gere imagens estáticas para ver como o ambiente vai ficar antes de gerar o vídeo. A prévia pode usar uma imagem de referência (img2img), incluir ou não o elenco e é salva em `pasta de saída/previas/` com um JSON do pedido. Depois você pode usá-la como imagem inicial de uma cena ou salvá-la como fundo.
 
+### Fila
+A aba Fila tem três partes, separadas:
+
+- **Gerando agora**: o que o LTX está gerando.
+- **Na fila**: o que vem depois, numerado na ordem em que vai rodar, de cima para baixo.
+- **Concluídas**: o histórico (concluídas, com erro, canceladas ou interrompidas), da mais recente para a mais antiga. **Retomar** e **Limpar concluídas** ficam aqui.
+
 ### Assistir
 **Assistir cena** toca todos os blocos em sequência, sem pausa entre eles, com uma linha do tempo por bloco. O modo **Só as transições** toca apenas o fim de cada bloco e o começo do seguinte (±1,5 s, 2 s ou 3 s) para conferir as emendas. **Exportar unida** gera `cena-NN-…-completa.mp4` para conferência. Os blocos continuam separados.
 
-### Roteiro com LLM
+### Roteiro com IA
+1. Em **⚙ Configurações**, cadastre a chave e escolha o modelo do roteiro.
+2. No projeto, clique em **✦ Gerar cenas com IA** e cole o **roteiro completo** (cenas, ações, falas). Se quiser, informe a duração total.
+3. Escolha se as cenas geradas entram **depois das cenas atuais** ou **substituem todas** e, se quiser, marque **Depois de importar, gerar o filme**.
+4. Clique em **Gerar e importar cenas**. A LLM divide o roteiro em cenas e cada cena em blocos de até 20 s, usando os personagens e fundos do projeto. Quando a resposta passa na validação, o Takes **importa as cenas sozinho**.
 
-#### Automático, com chave de API
-1. Em **Chaves de API…**, cadastre a chave do Claude (Anthropic) e/ou da OpenAI (ChatGPT/Codex). Pode cadastrar as duas.
-2. Escolha o modelo. A lista vem da API de cada provedor com chave cadastrada (na OpenAI, só os modelos de texto).
-3. Cole o **roteiro completo** (cenas, ações, falas) e, se quiser, a duração total, e clique em **Gerar cenas**. A LLM divide o roteiro em cenas e cada cena em blocos de até 20 s, usando os personagens e fundos do projeto.
+As instruções explicam à LLM como os blocos se encadeiam:
 
-   As instruções explicam à LLM como os blocos se encadeiam:
+- o LTX não lembra do que mudou;
+- o enquadramento do fim de um bloco passa para o próximo;
+- o fundo mostra o lugar no estado original;
+- o estado continua valendo nas cenas seguintes.
 
-   - o LTX não lembra do que mudou;
-   - o enquadramento do fim de um bloco passa para o próximo;
-   - o fundo mostra o lugar no estado original;
-   - o estado continua valendo nas cenas seguintes.
+A LLM escolhe a abertura de cada corte (`start`, de preferência `keyframe` para ângulos novos) e a de cada cena (`previous` quando ela retoma a anterior). Também preenche o `state` de cada bloco em que algo mudou. Títulos, sinopses e notas saem no idioma do roteiro; prompts e estados, em inglês.
 
-   A LLM escolhe a abertura de cada corte (`start`, de preferência `keyframe` para ângulos novos) e a de cada cena (`previous` quando ela retoma a anterior). Também preenche o `state` de cada bloco em que algo mudou.
+A resposta é validada, e o que falhar volta para a LLM corrigir (até duas vezes):
 
-   A resposta é validada, e o que falhar volta para a LLM corrigir:
+- corte sem `start`;
+- `block:N` que não é um bloco anterior;
+- fundo inexistente;
+- `keyframe` sem `opening`;
+- bloco com menos de 3 s;
+- fala que não cabe no bloco (com áudio ligado, mais de 3 palavras por segundo).
 
-   - corte sem `start`;
-   - `block:N` que não é um bloco anterior;
-   - fundo inexistente;
-   - `keyframe` sem `opening`;
-   - bloco com menos de 3 s;
-   - fala que não cabe no bloco (com áudio ligado, mais de 3 palavras por segundo).
-4. O resultado aparece em **Revise e importe**: confira e importe como novas cenas.
+Outros detalhes:
 
-- As chaves ficam em `~/Library/Application Support/Takes/ai.json` (permissão só do seu usuário) e valem para todos os projetos. A interface nunca recebe a chave, só os últimos caracteres.
-- A geração roda no servidor e continua se você fechar o assistente. Se a resposta não passar na validação (bloco acima de 20 s, personagem inexistente, JSON quebrado), o Takes devolve os problemas à LLM e pede a correção uma vez. Se ainda falhar, a resposta fica no campo para você ajustar à mão.
-- Claude: streaming com pensamento adaptativo e esforço `high` nos modelos que suportam. Nos modelos com classificadores de segurança (Opus 5.5, Opus 5, Sonnet 5.5, Fable 5.1/5.2) o pedido vai com `fallbacks: "default"`, e a Anthropic refaz a resposta em outro modelo se houver recusa.
+- A geração roda no servidor e continua se você fechar o assistente. Enquanto o modelo pensa, o assistente mostra a etapa (recebido, planejando, escrevendo) e um trecho do raciocínio.
+- Se a resposta ainda falhar depois das correções, o assistente mostra os problemas e a resposta da IA, e nada é importado.
+- Substituir as cenas fica bloqueado enquanto houver cenas do projeto na fila.
+- Claude: streaming com pensamento adaptativo resumido e o esforço das Configurações. Nos modelos com classificadores de segurança (Opus 5.5, Opus 5, Sonnet 5.5, Fable 5.1/5.2), o pedido vai com `fallbacks: "default"`, e a Anthropic refaz a resposta em outro modelo se houver recusa.
 - OpenAI: Responses API com streaming e `store: false`.
 - Cada geração é cobrada na sua conta do provedor.
-
-#### Manual, em outra LLM
-1. **Baixe o arquivo do projeto** (`<projeto>.takes-llm.json`). Ele traz o pré-prompt, os personagens e fundos com ids, as cenas existentes, as regras do LTX e o formato de resposta.
-2. Descreva a cena e a duração desejada e **copie as instruções**. Cole na LLM junto com o arquivo. Se a LLM não aceita anexos, marque "Incluir o arquivo no texto".
-3. **Cole a resposta** ou abra o `.json`, valide e importe como nova cena ou substituindo uma existente. A importação aceita JSON puro ou dentro de bloco de código, resolve personagens e fundos por id ou nome e recusa blocos acima de 20 s com a lista dos problemas.
+- `POST /api/projects/<id>/import-script` reimporta uma resposta salva (o JSON abaixo).
 
 Formato do roteiro:
 
@@ -215,7 +229,7 @@ Formato do roteiro:
 ```
 
 - `start` da cena: `"background"` (abre da imagem do fundo), `"previous"` (último quadro da cena anterior), `"keyframe"` (gerada a partir do `opening` do bloco 1 e de `"reference"`: `"background"`, `"previous"`, `"background:<id>"` ou `"none"`) ou `"none"` (só o texto).
-- `start` de um corte: `"keyframe"` (com `opening` e `reference` opcional), `"block:N"` (bloco anterior da mesma cena), `"scene"`, `"background:<id ou nome>"` ou `"none"`. No roteiro automático é obrigatório. Na importação manual, sem ele o corte usa a imagem da cena, com um aviso.
+- `start` de um corte: `"keyframe"` (com `opening` e `reference` opcional), `"block:N"` (bloco anterior da mesma cena), `"scene"`, `"background:<id ou nome>"` ou `"none"`. É obrigatório; sem ele a resposta volta para a LLM corrigir.
 - `state`: o estado atual em inglês, quando difere do fundo.
 
 ## Saída
