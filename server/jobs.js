@@ -777,7 +777,14 @@ export class JobQueue {
     const work = path.join(sceneFolder(project, scene), ".trabalho");
     await fsp.mkdir(work, { recursive: true });
     let reference = null;
-    const from = resolveStart(project, scene, index, ref, 1);
+    let from;
+    try {
+      from = resolveStart(project, scene, index, ref, 1);
+    } catch (error) {
+      // A referência sumiu (fundo excluído, bloco removido): gera a abertura só pelo texto.
+      (job.warnings ??= []).push(`Bloco ${index + 1}: a referência da imagem de abertura não está disponível (${error.message}); a imagem foi gerada só pelo texto.`);
+      from = { image: null };
+    }
     if (from.source) {
       reference = path.join(work, `bloco-${pad(index + 1)}-referencia-${Date.now().toString(36)}.png`);
       await this.media.extractFrame(from.source.take.file, reference, { which: "last", signal });

@@ -181,6 +181,7 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
         for (const s of p.scenes) {
           if (s.backgroundId === bid) s.backgroundId = null;
           if (s.start.kind === "background" && s.start.id === bid) s.start = { kind: "none", id: null };
+          if (s.start.kind === "keyframe" && s.start.ref?.kind === "background" && s.start.ref.id === bid) s.start = { ...s.start, ref: { kind: "none", id: null } };
           for (const b of s.blocks) {
             if (b.start?.kind === "background" && b.start.id === bid) b.start = { kind: "scene", id: null };
             if (b.start?.kind === "keyframe" && b.start.ref?.kind === "background" && b.start.ref.id === bid) b.start = { ...b.start, ref: { kind: "scene", id: null } };

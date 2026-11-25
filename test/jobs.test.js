@@ -584,3 +584,19 @@ test("character reference sheets are generated from the photo", { skip: !ffmpeg 
   assert.equal(ltx.calls[0][1].imagePath, photo);
   assert.match(ltx.calls[1][1].prompt, /Side profile/);
 });
+
+test("a generated opening whose reference is gone is made from text only", { skip: !ffmpeg && "ffmpeg ausente" }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  const queue = new JobQueue({ store, ltx });
+  const p = store.create("Sem fundo");
+  store.edit(p.id, { outputDir: path.join(root, "out"), scenes: [{ id: "s", title: "Cena", start: { kind: "keyframe", ref: { kind: "background", id: "sumiu" } }, blocks: [{ id: "a", prompt: "a", opening: "wide", duration: 2 }] }] });
+  queue.addScene(p.id, "s");
+  await waitIdle(queue);
+  const job = queue.jobs[0];
+  assert.equal(job.status, "complete", job.error);
+  assert.equal(ltx.calls[0][0], "image");
+  assert.equal(ltx.calls[0][1].imagePath, undefined);
+  assert.match(job.warnings[0], /referência da imagem de abertura não está disponível/);
+});
