@@ -323,3 +323,7 @@ label.inline input.wide-num { width: 96px; }
 .imported h3 { color: var(--ok); }
 pre.raw { max-height: 240px; overflow: auto; background: #151412; padding: 8px; border-radius: 8px; }
 label > span:first-child { color: var(--text); }
+
+.use-block { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.use-block h4 { margin: 0 0 4px; }
+.key-row .ok-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

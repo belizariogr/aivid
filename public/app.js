@@ -416,7 +416,7 @@ function overview() {
 
       <section class="card">
         <h3>IA durante a geração</h3>
-        <p class="hint">${model ? `Usa ${esc(modelName(state.ai.settings?.reviewModel ?? model))}, definido em <a href="#" data-action="open-settings">Configurações</a>.` : `Escolha um modelo em <a href="#" data-action="open-settings">Configurações</a>; sem modelo, os blocos seguem o plano sem conferência.`} Cada bloco conferido é uma chamada de API com imagens.</p>
+        <p class="hint">${model ? `Usa ${esc(modelName(state.ai.settings?.reviewModel ?? model))} (${esc(providerName((state.ai.settings?.reviewModel ?? model).provider))}), definido em <a href="#" data-action="open-settings">Configurações</a>.` : `Escolha um modelo em <a href="#" data-action="open-settings">Configurações</a>; sem modelo, os blocos seguem o plano sem conferência.`} Cada bloco conferido é uma chamada com imagens: pela API, cobrada por token; pela assinatura, dentro do limite do plano.</p>
         <label class="check" title="Antes de cada bloco, a LLM vê o último quadro real dos blocos anteriores e pode ajustar a continuidade, a imagem inicial e o prompt."><input type="checkbox" data-bind="p.settings.review" ${s.review ? "checked" : ""}> Revisar a continuidade antes de cada bloco</label>
         <label class="check" title="Depois de cada bloco, a LLM confere o take; se reprovar, o Takes gera outro e fica com o melhor."><input type="checkbox" data-bind="p.settings.judge" data-rerender="1" ${s.judge ? "checked" : ""}> Juiz depois de cada bloco</label>
         ${s.judge ? `<label class="inline indent">Retakes se reprovar <select data-bind="p.settings.retakes" data-type="number">${[0, 1, 2, 3].map((r) => option(r, r === 0 ? "nenhum" : `até ${r}`, s.retakes)).join("")}</select></label>` : ""}
@@ -975,6 +975,7 @@ function modelOptions(current, { inherit = null } = {}) {
   return `${option("", inherit ?? "Escolha o modelo…", current)}${groups}`;
 }
 
+const providerName = (id) => state.ai.settings?.providers.find((p) => p.id === id)?.name ?? id;
 const modelKey = (m) => (m ? `${m.provider}:${m.id}` : "");
 const modelName = (m) => (m ? state.ai.models.find((x) => x.provider === m.provider && x.id === m.id)?.name ?? m.id : "");
 
@@ -992,7 +993,7 @@ function scriptModal() {
     <div class="steps">
       <section>
         <div class="model-line">
-          ${model ? `<span>Modelo: <strong>${esc(modelName(model))}</strong> · esforço ${esc((EFFORT_LABEL[a.settings.effort] ?? a.settings.effort).toLowerCase())}</span>` : `<span class="warn">Nenhum modelo escolhido.</span>`}
+          ${model ? `<span>Modelo: <strong>${esc(modelName(model))}</strong> · ${esc(providerName(model.provider))} · esforço ${esc((EFFORT_LABEL[a.settings.effort] ?? a.settings.effort).toLowerCase())}${a.settings.fast ? " · modo rápido" : ""}</span>` : `<span class="warn">Nenhum modelo escolhido.</span>`}
           <button class="btn small ghost" data-action="open-settings">${model ? "Alterar…" : "Configurar…"}</button>
         </div>
         <p class="hint">Cole o roteiro completo (cenas, ações e falas). A IA divide em cenas e blocos de até 20 s usando os personagens e fundos do projeto, confere o resultado e importa as cenas direto no projeto. A geração continua se você fechar esta janela.</p>
@@ -1010,6 +1011,7 @@ function scriptModal() {
         ${running ? `<button class="btn danger" data-action="ai-cancel">Cancelar</button>` : `<button class="btn primary" data-action="ai-generate" ${model ? "" : "disabled"}>Gerar e importar cenas</button>`}
       </div>
       ${t?.status === "error" ? `<section><pre class="error">${esc(t.error)}</pre>${t.text ? `<details><summary class="muted small">Ver a resposta da IA</summary><pre class="mono raw">${esc(t.text.slice(0, 20000))}</pre></details>` : ""}</section>` : ""}
+      ${t?.notices?.length ? `<section>${t.notices.map((n) => `<p class="warn small">${esc(n)}</p>`).join("")}</section>` : ""}
       ${imported ? importedSummary(t) : ""}
     </div>
   </div>`;
@@ -1040,9 +1042,19 @@ function settingsModal(m) {
     <div class="modal-head"><h2>Configurações</h2><button class="icon-btn" data-action="close-settings" title="Fechar">✕</button></div>
     <div class="steps settings">
       <section>
-        <h3>Chaves de API</h3>
-        <p class="hint">Ficam só neste Mac, na biblioteca do Takes, e valem para todos os projetos. Cada uso é cobrado na sua conta do provedor.</p>
+        <h3>Ferramentas de IA</h3>
+        <p class="hint">As ferramentas de assinatura usam o login do programa instalado neste Mac: sem cobrança por token, dentro do limite do seu plano. As APIs cobram por token na sua conta.</p>
         ${providers
+          .filter((p) => p.cli)
+          .map(
+            (p) => `<div class="key-row">
+              <span class="key-name">${esc(p.name)}</span>
+              ${p.configured ? `<span class="ok-line grow mono small">✓ ${esc(p.path)}</span>` : `<span class="muted grow small">Não encontrado. ${esc(p.setup)}</span>`}
+            </div>`,
+          )
+          .join("")}
+        ${providers
+          .filter((p) => !p.cli)
           .map(
             (p) => `<div class="key-row">
               <span class="key-name">${esc(p.name)}</span>
@@ -1057,13 +1069,27 @@ function settingsModal(m) {
         <div class="section-head"><h3>Modelos de IA</h3><button class="btn ghost small" data-action="refresh-ai-models" title="Atualizar a lista de modelos">↻ Atualizar lista</button></div>
         ${
           a.models.length
-            ? `<div class="settings-grid">
-                <label><span>Roteiro <span class="muted small">divide o roteiro em cenas e blocos</span></span><select data-settings="model">${modelOptions(m.model)}</select></label>
-                <label>Esforço do roteiro${effortSelect("effort", m.effort)}</label>
-                <label><span>Revisão e juiz <span class="muted small">confere continuidade e takes, com imagens</span></span><select data-settings="reviewModel">${modelOptions(m.reviewModel, { inherit: "Igual ao do roteiro" })}</select></label>
-                <label>Esforço da revisão e do juiz${effortSelect("reviewEffort", m.reviewEffort)}</label>
+            ? `<div class="use-block">
+                <h4>Roteiro</h4>
+                <div class="settings-grid">
+                  <label><span>Modelo <span class="muted small">divide o roteiro em cenas e blocos</span></span><select data-settings="model">${modelOptions(m.model)}</select></label>
+                  <label>Esforço${effortSelect("effort", m.effort)}</label>
+                </div>
+                <label class="check"><input type="checkbox" data-settings-check="fast" ${m.fast ? "checked" : ""}> Modo rápido <span class="muted small">só Claude Opus 5.5 e Fable 5.2; responde mais rápido e custa o dobro. No Claude Code consome créditos de uso, fora do limite do plano.</span></label>
               </div>
-              <p class="hint">Mais esforço pensa mais antes de responder: melhor resultado, mais tempo e custo. O roteiro costuma valer o esforço alto; a revisão e o juiz rodam a cada bloco, então o médio costuma bastar.</p>`
+              <div class="use-block">
+                <h4>Juiz e revisão</h4>
+                <div class="settings-grid">
+                  <label><span>Modelo <span class="muted small">confere a continuidade e julga cada take, com imagens</span></span><select data-settings="reviewModel">${modelOptions(m.reviewModel, { inherit: "Igual ao do roteiro" })}</select></label>
+                  <label>Esforço${effortSelect("reviewEffort", m.reviewEffort)}</label>
+                </div>
+                <div class="row">
+                  <label class="inline">Quadros enviados ao juiz <select data-settings="frameSeconds">${[1, 2, 3, 4].map((n) => option(n, n === 1 ? "1 por segundo" : `1 a cada ${n} s`, m.frameSeconds)).join("")}</select></label>
+                  <span class="muted small">Um take de 20 s com 1 a cada 2 s vai com 11 imagens.</span>
+                </div>
+                <label class="check"><input type="checkbox" data-settings-check="reviewFast" ${m.reviewFast ? "checked" : ""}> Modo rápido</label>
+              </div>
+              <p class="hint">Mais esforço pensa mais antes de responder: melhor resultado, mais tempo e mais uso.</p>`
             : `<p class="hint">${a.loading ? "Buscando modelos…" : "Cadastre uma chave de API e salve para listar os modelos."}</p>`
         }
       </section>
@@ -1121,6 +1147,7 @@ document.addEventListener("change", (e) => {
   const m = state.modal;
   if (m?.type !== "settings") return;
   if (el.dataset.settings) m[el.dataset.settings] = el.value;
+  if (el.dataset.settingsCheck) m[el.dataset.settingsCheck] = el.checked;
   if (el.dataset.default) {
     const v = el.type === "checkbox" ? el.checked : el.dataset.type === "number" ? Number(el.value) : el.value;
     m.defaults = { ...m.defaults, [el.dataset.default]: v };
@@ -1479,6 +1506,9 @@ const actions = {
       effort: a.effort ?? "high",
       reviewModel: modelKey(a.reviewModel),
       reviewEffort: a.reviewEffort ?? "medium",
+      fast: Boolean(a.fast),
+      reviewFast: Boolean(a.reviewFast),
+      frameSeconds: a.frameSeconds ?? 2,
       defaults: { ...(a.defaults ?? {}) },
     };
     render();
@@ -1500,7 +1530,7 @@ const actions = {
     };
     const keys = Object.fromEntries(Object.entries(m.keys).filter(([, v]) => v.trim()));
     const newKey = Object.keys(keys).length > 0;
-    state.ai.settings = await api("PUT", "/api/ai", { ...(newKey ? { keys } : {}), model: ref(m.model), effort: m.effort, reviewModel: ref(m.reviewModel), reviewEffort: m.reviewEffort, defaults: m.defaults });
+    state.ai.settings = await api("PUT", "/api/ai", { ...(newKey ? { keys } : {}), model: ref(m.model), effort: m.effort, reviewModel: ref(m.reviewModel), reviewEffort: m.reviewEffort, fast: m.fast, reviewFast: m.reviewFast, frameSeconds: Number(m.frameSeconds), defaults: m.defaults });
     if (newKey) {
       // Com chave nova, a lista de modelos muda: continua aberto para escolher o modelo.
       m.keys = {};

@@ -1,12 +1,31 @@
-// Roteiro automático por API: chaves dos provedores, modelos disponíveis e geração em segundo plano.
+// IA do Takes: provedores (APIs com chave e CLIs com assinatura), modelos disponíveis, configurações
+// gerais e o roteiro automático em segundo plano.
 import fs from "node:fs";
+import { findCli, resetCliCache, streamClaudeCode, streamCodex, streamCursor, codexModels } from "./cli.js";
 import { newId, normalizeSettings } from "./store.js";
 import { fullScriptRequest, repairRequest, parseScript, extractJson } from "./llm.js";
 
+// `cli`: usa o login de uma assinatura pelo programa de linha de comando, sem chave de API.
 export const PROVIDERS = {
-  anthropic: { name: "Claude (Anthropic)", keyUrl: "https://console.anthropic.com/settings/keys" },
-  openai: { name: "OpenAI (ChatGPT / Codex)", keyUrl: "https://platform.openai.com/api-keys" },
+  "claude-code": { name: "Claude Code (assinatura Claude)", cli: "claude", setup: "Instale o Claude Code e faça login com `claude`." },
+  codex: { name: "Codex (assinatura ChatGPT)", cli: "codex", setup: "Instale o Codex e faça login com `codex login`." },
+  cursor: { name: "Cursor (assinatura Cursor)", cli: "cursor-agent", alt: "agent", setup: "Instale com `curl https://cursor.com/install -fsS | bash` e faça login com `cursor-agent login`." },
+  anthropic: { name: "Claude API (chave)", keyUrl: "https://console.anthropic.com/settings/keys" },
+  openai: { name: "OpenAI API (chave)", keyUrl: "https://platform.openai.com/api-keys" },
 };
+
+const cliPath = (provider) => {
+  const p = PROVIDERS[provider];
+  return p?.cli ? findCli(p.cli) ?? (p.alt ? findCli(p.alt) : null) : null;
+};
+
+// Modelos que o Claude Code aceita pelo nome; a lista não vem de uma API.
+const CLAUDE_CODE_MODELS = [
+  { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
+  { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
+  { id: "claude-haiku-5-5", name: "Claude Haiku 5.5" },
+  { id: "claude-fable-5-2", name: "Claude Fable 5.2" },
+];
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION = "2026-10-21";
@@ -41,8 +60,19 @@ export class AiSettings {
       effort: effortOf(raw.effort, "high"),
       reviewModel: modelRef(raw.reviewModel),
       reviewEffort: effortOf(raw.reviewEffort, "medium"),
+      // Modo rápido do roteiro e da revisão/juiz (só nos modelos Claude que têm).
+      fast: Boolean(raw.fast),
+      reviewFast: Boolean(raw.reviewFast),
+      // Um quadro do take a cada N segundos vai para o juiz (e para o ajuste antes do retake).
+      frameSeconds: [1, 2, 3, 4].includes(Number(raw.frameSeconds)) ? Number(raw.frameSeconds) : 2,
       defaults: normalizeSettings(raw.defaults ?? {}),
     };
+  }
+
+  // Provedor pronto para uso: chave cadastrada (API) ou programa instalado (assinatura).
+  has(provider) {
+    if (!PROVIDERS[provider]) return false;
+    return PROVIDERS[provider].cli ? Boolean(cliPath(provider)) : Boolean(this.key(provider));
   }
 
   key(provider) {
@@ -53,6 +83,10 @@ export class AiSettings {
   view() {
     return {
       providers: Object.entries(PROVIDERS).map(([id, p]) => {
+        if (p.cli) {
+          const file = cliPath(id);
+          return { id, name: p.name, cli: true, configured: Boolean(file), path: file, setup: p.setup };
+        }
         const key = this.key(id);
         return { id, name: p.name, keyUrl: p.keyUrl, configured: Boolean(key), hint: key ? `…${key.slice(-4)}` : "" };
       }),
@@ -60,6 +94,9 @@ export class AiSettings {
       effort: this.data.effort,
       reviewModel: this.data.reviewModel,
       reviewEffort: this.data.reviewEffort,
+      fast: this.data.fast,
+      reviewFast: this.data.reviewFast,
+      frameSeconds: this.data.frameSeconds,
       defaults: this.data.defaults,
       efforts: EFFORTS,
     };
@@ -67,14 +104,17 @@ export class AiSettings {
 
   // Modelo da revisão e do juiz: o próprio, ou o do roteiro.
   supervisor() {
-    const m = this.data.reviewModel && this.key(this.data.reviewModel.provider) ? this.data.reviewModel : this.data.model;
-    return m && this.key(m.provider) ? m : null;
+    const m = this.data.reviewModel && this.has(this.data.reviewModel.provider) ? this.data.reviewModel : this.data.model;
+    return m && this.has(m.provider) ? m : null;
   }
 
-  update({ keys, model, effort, reviewModel, reviewEffort, defaults } = {}) {
+  update({ keys, model, effort, reviewModel, reviewEffort, frameSeconds, fast, reviewFast, defaults } = {}) {
+    if (fast !== undefined) this.data.fast = Boolean(fast);
+    if (reviewFast !== undefined) this.data.reviewFast = Boolean(reviewFast);
+    if (frameSeconds !== undefined && [1, 2, 3, 4].includes(Number(frameSeconds))) this.data.frameSeconds = Number(frameSeconds);
     if (keys && typeof keys === "object") {
       for (const [id, value] of Object.entries(keys)) {
-        if (!PROVIDERS[id] || typeof value !== "string") continue;
+        if (!PROVIDERS[id] || PROVIDERS[id].cli || typeof value !== "string") continue;
         const key = value.trim();
         if (key) this.data.keys[id] = key;
         else delete this.data.keys[id];
@@ -85,8 +125,8 @@ export class AiSettings {
     if (effort !== undefined) this.data.effort = effortOf(effort, this.data.effort);
     if (reviewEffort !== undefined) this.data.reviewEffort = effortOf(reviewEffort, this.data.reviewEffort);
     if (defaults && typeof defaults === "object") this.data.defaults = normalizeSettings({ ...this.data.defaults, ...defaults });
-    if (this.data.model && !this.key(this.data.model.provider)) this.data.model = null;
-    if (this.data.reviewModel && !this.key(this.data.reviewModel.provider)) this.data.reviewModel = null;
+    if (this.data.model && !this.has(this.data.model.provider)) this.data.model = null;
+    if (this.data.reviewModel && !this.has(this.data.reviewModel.provider)) this.data.reviewModel = null;
     const tmp = `${this.file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, this.file);
@@ -151,7 +191,17 @@ async function openaiModels(key, fetchImpl) {
 }
 
 // Respostas longas vão por streaming: um roteiro inteiro passa do tempo limite de uma resposta comum.
-async function streamAnthropic({ key, model, system, messages, signal, onText, fetchImpl, effort = "high" }) {
+async function streamAnthropic(opts) {
+  try {
+    return await anthropicOnce(opts);
+  } catch (error) {
+    if (!opts.fast || error.code !== "FAST_UNAVAILABLE") throw error;
+    opts.onNotice?.(`Modo rápido indisponível (${error.message}); a chamada seguiu no modo normal.`);
+    return anthropicOnce({ ...opts, fast: false });
+  }
+}
+
+async function anthropicOnce({ key, model, system, messages, signal, onText, fetchImpl, effort = "high", fast = false }) {
   const body = {
     model: model.id,
     max_tokens: Math.min(model.maxTokens || 64000, 64000),
@@ -170,13 +220,19 @@ async function streamAnthropic({ key, model, system, messages, signal, onText, f
     const level = levels.includes(effort) ? effort : [...levels].reverse().find((l) => EFFORTS.indexOf(l) <= wanted) ?? levels[0];
     body.output_config = { effort: level };
   }
+  // Modo rápido (Opus 5.5 e Fable 5.2): mais tokens por segundo, ao dobro do preço.
+  if (fast) body.speed = "fast";
   const headers = anthropicHeaders(key);
   if (ANTHROPIC_FALLBACK.has(model.id)) {
     headers["anthropic-beta"] = "server-side-fallback-2026-07-01";
     body.fallbacks = "default";
   }
   const res = await fetchImpl(`${ANTHROPIC_URL}/messages`, { method: "POST", headers, body: JSON.stringify(body), signal });
-  if (!res.ok) throw await apiError(res, "anthropic");
+  if (!res.ok) {
+    const error = await apiError(res, "anthropic");
+    if (fast && res.status === 400 && /speed|fast/i.test(error.message)) error.code = "FAST_UNAVAILABLE";
+    throw error;
+  }
   let text = "";
   let stop = null;
   for await (const ev of sse(res.body)) {
@@ -220,13 +276,15 @@ async function streamOpenai({ key, model, system, messages, signal, onText, fetc
   return text;
 }
 
-const STREAM = { anthropic: streamAnthropic, openai: streamOpenai };
+const STREAM = { anthropic: streamAnthropic, openai: streamOpenai, "claude-code": streamClaudeCode, codex: streamCodex, cursor: streamCursor };
 // Tentativas de gerar um roteiro válido (a 1ª e até duas correções).
 const MAX_ATTEMPTS = 3;
 
 // Mensagem do usuário com texto e imagens no formato de cada provedor.
-// `parts`: [{ text }] ou [{ image: { mediaType, data } }] (data em base64).
+// `parts`: [{ text }] ou [{ image: { mediaType, data } }] (data em base64). Os CLIs recebem as
+// partes como estão e montam o pedido do seu jeito.
 export function userMessage(provider, parts) {
+  if (PROVIDERS[provider]?.cli) return { role: "user", parts };
   const content = parts.map((part) => {
     if (part.image) {
       const { mediaType, data } = part.image;
@@ -243,7 +301,13 @@ export function userMessage(provider, parts) {
 export function ask(provider, opts) {
   return STREAM[provider]({ onText: () => {}, ...opts });
 }
-const LIST = { anthropic: anthropicModels, openai: openaiModels };
+const LIST = {
+  anthropic: anthropicModels,
+  openai: openaiModels,
+  "claude-code": async () => CLAUDE_CODE_MODELS.map((m) => ({ provider: "claude-code", ...m, effort: true, adaptive: true, efforts: EFFORTS })),
+  codex: async () => codexModels(),
+  cursor: async () => [{ provider: "cursor", id: "auto", name: "Automático (o Cursor escolhe)" }],
+};
 
 export class ScriptWriter {
   constructor({ settings, store, fetchImpl = fetch, onChange = () => {} }) {
@@ -257,12 +321,13 @@ export class ScriptWriter {
 
   // Lista os modelos de todos os provedores com chave. Um provedor com erro não esconde os outros.
   async listModels({ refresh = false } = {}) {
+    if (refresh) resetCliCache();
     const models = [];
     const errors = [];
     await Promise.all(
       Object.keys(PROVIDERS).map(async (provider) => {
-        const key = this.settings.key(provider);
-        if (!key) return;
+        if (!this.settings.has(provider)) return;
+        const key = PROVIDERS[provider].cli ? cliPath(provider) : this.settings.key(provider);
         const cached = this.models.get(provider);
         if (!refresh && cached?.key === key) return models.push(...cached.list);
         try {
@@ -281,7 +346,8 @@ export class ScriptWriter {
 
   async resolveModel(provider, id) {
     if (!PROVIDERS[provider]) throw fail("Escolha um modelo.");
-    if (!this.settings.key(provider)) throw fail(`Cadastre a chave de API de ${PROVIDERS[provider].name}.`);
+    if (!this.settings.has(provider))
+      throw fail(PROVIDERS[provider].cli ? `${PROVIDERS[provider].name} não encontrado neste Mac. ${PROVIDERS[provider].setup}` : `Cadastre a chave de API de ${PROVIDERS[provider].name}.`);
     await this.listModels();
     const model = this.models.get(provider)?.list.find((m) => m.id === id);
     return model ?? { provider, id };
@@ -314,7 +380,7 @@ export class ScriptWriter {
     this.store.get(projectId);
     if (!String(script || "").trim()) throw fail("Cole o roteiro completo.");
     const chosen = this.settings.data.model;
-    if (!chosen || !this.settings.key(chosen.provider)) throw fail("Escolha o modelo do roteiro em Configurações.");
+    if (!chosen || !this.settings.has(chosen.provider)) throw fail("Escolha o modelo do roteiro em Configurações.");
     this.ensureIdle(projectId);
     this.checkImport?.(projectId, { mode });
     const model = await this.resolveModel(chosen.provider, chosen.id);
@@ -366,7 +432,18 @@ export class ScriptWriter {
     let data = null;
     try {
       for (;;) {
-        const text = await STREAM[task.provider]({ key: this.settings.key(task.provider), model, system, messages, signal: task.abort.signal, onText, fetchImpl: this.fetch, effort: this.settings.data.effort });
+        const text = await STREAM[task.provider]({
+          key: this.settings.key(task.provider),
+          model,
+          system,
+          messages,
+          signal: task.abort.signal,
+          onText,
+          fetchImpl: this.fetch,
+          effort: this.settings.data.effort,
+          fast: this.settings.data.fast,
+          onNotice: (msg) => (task.notices ??= []).push(msg),
+        });
         task.text = text;
         let errors;
         try {

@@ -33,7 +33,7 @@ ${CONTINUITY_RULES}
 Reply with ONLY a JSON object, no text before or after it:
 {"decision": "keep" or "change", "continuity": "continue" | "frame" | "cut", "start": "keyframe" | "block:N" | "scene" | "background:<id>" | "none" (only when "continuity" is "cut"; N must be an earlier block that was rendered), "reference": "scene" | "block:N" | "background:<id>" | "none" (only with "keyframe"), "opening": "English description of the first frame (only with keyframe)", "state": "current state in English, or empty", "prompt": "the full prompt of the block (unchanged when keeping)", "note": "continuity note for the editor, in Brazilian Portuguese", "reason": "one or two sentences in Brazilian Portuguese explaining what you saw and what you changed, or why the plan is fine"}`;
 
-const JUDGE_SYSTEM = `You are the quality judge of a video made with LTX, a local text/image-to-video model, inside the Takes app. LTX just rendered one block (at most 20 seconds) of a scene. You see frames of the rendered take (start, middle, end), the last frame of the previous block, the opening image that was used, and reference photos of the characters.
+const JUDGE_SYSTEM = `You are the quality judge of a video made with LTX, a local text/image-to-video model, inside the Takes app. LTX just rendered one block (at most 20 seconds) of a scene. You see frames of the rendered take in order (one every few seconds, then the last one), the last frame of the previous block, the opening image that was used, and reference photos of the characters.
 
 Decide whether this take is good enough to keep, as a demanding but pragmatic film editor. LTX is imperfect: small deviations in pose, timing or detail pass. Fail the take only for problems a viewer would notice:
 - The main action of the prompt did not happen or something clearly different happened.
@@ -52,7 +52,7 @@ Pass the image when it shows the planned framing and the place in the current "s
 Reply with ONLY a JSON object, no text before or after it:
 {"pass": true or false, "problems": ["each problem in Brazilian Portuguese"], "reason": "one sentence in Brazilian Portuguese"}`;
 
-const REVISE_SYSTEM = `You fix a block of a video made with LTX, a local text/image-to-video model, inside the Takes app. The quality judge just rejected a take of this block. LTX will render the block again. You see the judge's verdict, frames of the rejected take (first, middle, last), the last frame of the previous block, the opening image that was used and reference photos of the characters.
+const REVISE_SYSTEM = `You fix a block of a video made with LTX, a local text/image-to-video model, inside the Takes app. The quality judge just rejected a take of this block. LTX will render the block again. You see the judge's verdict, frames of the rejected take in order (one every few seconds, then the last one), the last frame of the previous block, the opening image that was used and reference photos of the characters.
 
 Find why the take failed and change what will make the next take pass:
 - If the action did not happen or came out wrong, rewrite the prompt so the action is simple, explicit and in chronological order; describe one main action per block; name who does what, where and how the camera frames it.
@@ -100,7 +100,7 @@ export class ContinuityReviewer {
   model() {
     if (this.settings.supervisor) return this.settings.supervisor();
     const m = this.settings.data.model;
-    return m && this.settings.key(m.provider) ? m : null;
+    return m && (this.settings.has ? this.settings.has(m.provider) : this.settings.key(m.provider)) ? m : null;
   }
 
   // Monta as partes de uma mensagem: textos e imagens reduzidas a JPEG.
@@ -144,6 +144,16 @@ export class ContinuityReviewer {
     ].join("\n");
   }
 
+  // Quadros do take a cada `frameSeconds` (2 s por padrão) e o último: um take de 20 s vai com 11
+  // imagens, para o juiz ver a ação inteira e não só o começo, o meio e o fim.
+  async takeFrames(m, take, info, label) {
+    const step = Number(this.settings.data?.frameSeconds) || 2;
+    const times = [];
+    for (let t = 0; t < info.duration - step / 2 && times.length < 19; t += step) times.push(t);
+    for (const t of times) await m.image(`${label}, frame at ${t.toFixed(1)} s of ${info.duration.toFixed(1)} s:`, take.file, { time: t });
+    await m.image(`${label}, last frame (${info.duration.toFixed(1)} s):`, take.file, { last: true });
+  }
+
   // Foto e ficha de corpo inteiro de quem aparece no bloco.
   async characterImages(m, project, scene, block) {
     for (const c of sceneCharacters(project, scene, block).slice(0, MAX_CHARACTERS)) {
@@ -161,7 +171,16 @@ export class ContinuityReviewer {
     const key = this.settings.key(model.provider);
     const messages = [userMessage(model.provider, parts)];
     for (let attempt = 1; ; attempt++) {
-      const reply = await ask(model.provider, { key, model: resolved, system, messages, signal, fetchImpl: this.fetch, effort: this.settings.data.reviewEffort ?? "medium" });
+      const reply = await ask(model.provider, {
+        key,
+        model: resolved,
+        system,
+        messages,
+        signal,
+        fetchImpl: this.fetch,
+        effort: this.settings.data.reviewEffort ?? "medium",
+        fast: Boolean(this.settings.data.reviewFast),
+      });
       try {
         return { ...parse(extractJson(reply)), model: `${PROVIDERS[model.provider].name} · ${resolved.name || resolved.id}` };
       } catch (error) {
@@ -257,9 +276,7 @@ export class ContinuityReviewer {
     const prev = index > 0 ? selectedTake(scene.blocks[index - 1]) : null;
     if (prev) await m.image(`Last frame of the previous block (${index}):`, prev.file, { last: true });
     if (take.startImage) await m.image("Opening image used for the rejected take:", take.startImage);
-    await m.image("Rejected take, first frame:", take.file, { time: 0 });
-    await m.image("Rejected take, middle frame:", take.file, { time: info.duration / 2 });
-    await m.image("Rejected take, last frame:", take.file, { last: true });
+    await this.takeFrames(m, take, info, "Rejected take");
     await this.characterImages(m, project, scene, block);
     m.text(`Fix block ${index + 1} for the next take now and reply with the JSON.`);
     return this.askJson(
@@ -316,9 +333,7 @@ export class ContinuityReviewer {
     const prev = index > 0 ? selectedTake(scene.blocks[index - 1]) : null;
     if (prev) await m.image(`Last frame of the previous block (${index}):`, prev.file, { last: true });
     if (take.startImage) await m.image("Opening image used for this take:", take.startImage);
-    await m.image("Rendered take, first frame:", take.file, { time: 0 });
-    await m.image("Rendered take, middle frame:", take.file, { time: info.duration / 2 });
-    await m.image("Rendered take, last frame:", take.file, { last: true });
+    await this.takeFrames(m, take, info, "Rendered take");
     await this.characterImages(m, project, scene, block);
     m.text("Judge the take now and reply with the JSON.");
     return this.askJson(

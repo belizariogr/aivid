@@ -48,11 +48,28 @@ Se o app fechar sozinho ou for encerrado à força, vale a primeira opção. Se 
 ## Como funciona
 
 ### Configurações
-O botão **⚙ Configurações**, no topo, reúne o que vale para todos os projetos:
+O botão **⚙ Configurações**, no topo, reúne o que vale para todos os projetos.
 
-- **Chaves de API**: Claude (Anthropic) e/ou OpenAI (ChatGPT/Codex).
-- **Modelos de IA**: o do **roteiro** e o da **revisão e do juiz** (pode ser o mesmo ou um mais barato), cada um com seu **esforço** (baixo, médio, alto, muito alto, máximo). Nos modelos Claude, um esforço que o modelo não aceita cai no mais próximo abaixo. Na OpenAI, o esforço é o padrão do modelo.
-- **Padrões de um projeto novo**: resolução, proporção, FPS, contexto da continuação, retakes, áudio, revisão e juiz.
+**Ferramentas de IA.** Cada uma pode servir para o roteiro, para o juiz ou para os dois:
+
+| Ferramenta | Como paga | O que precisa |
+|---|---|---|
+| **Claude Code** | Assinatura Claude (dentro do limite do plano) | `claude` instalado e com login |
+| **Codex** | Assinatura ChatGPT | `codex` instalado e com login |
+| **Cursor** | Assinatura Cursor | `cursor-agent` instalado e com login |
+| **Claude API** | Por token, com chave | Chave da Anthropic |
+| **OpenAI API** | Por token, com chave | Chave da OpenAI |
+
+O Takes acha os programas em `~/.local/bin`, no Homebrew ou no PATH do shell de login. Ele os roda sem interação, sem ferramentas (só responder), numa pasta temporária e sem as variáveis de chave de API no ambiente, para garantir que o uso caia na assinatura. Os modelos do Codex vêm do cache que o próprio Codex mantém para a conta (só os que aceitam imagem). O Claude Code lista Opus 5.5, Sonnet 5.5, Haiku 5.5 e Fable 5.2.
+
+**Dois modelos, cada um com seu esforço e modo rápido:**
+
+- **Roteiro**: divide o roteiro em cenas e blocos.
+- **Juiz e revisão**: confere a continuidade antes de cada bloco, julga cada take e ajusta o bloco antes de um retake. Também define **Quadros enviados ao juiz**: 1 por segundo ou 1 a cada 2, 3 ou 4 s (padrão: 1 a cada 2 s, ou seja, 11 imagens num take de 20 s).
+
+O **modo rápido** vale só para o Claude Opus 5.5 e o Fable 5.2: responde mais rápido e custa o dobro. No Claude Code ele usa créditos de uso, fora do limite do plano. Se não estiver disponível, a chamada é refeita no modo normal e o Takes avisa.
+
+**Padrões de um projeto novo:** resolução, proporção, FPS, contexto da continuação, retakes, áudio, revisão e juiz.
 
 Tudo fica em `~/Library/Application Support/Takes/ai.json`, com permissão só do seu usuário. A interface nunca recebe a chave, só os últimos caracteres.
 
@@ -111,9 +128,9 @@ A imagem inicial do 1º bloco de uma cena pode ser:
 
 #### Juiz com IA e retakes
 
-Opcional, em **Projeto → IA durante a geração → Juiz depois de cada bloco**, com o modelo da revisão e do juiz das **Configurações**. Depois de cada bloco, a LLM recebe:
+Opcional, em **Projeto → IA durante a geração → Juiz depois de cada bloco**, com o modelo do juiz das **Configurações**. Depois de cada bloco, a LLM recebe:
 
-- o primeiro, o do meio e o último quadro do take;
+- quadros do take ao longo dele (1 a cada 2 s por padrão, mais o último);
 - o último quadro do bloco anterior;
 - a imagem de abertura usada;
 - a foto e a ficha de corpo inteiro de cada personagem do bloco.
@@ -181,7 +198,7 @@ A aba Fila tem três partes, separadas:
 **Assistir cena** toca todos os blocos em sequência, sem pausa entre eles, com uma linha do tempo por bloco. O modo **Só as transições** toca apenas o fim de cada bloco e o começo do seguinte (±1,5 s, 2 s ou 3 s) para conferir as emendas. **Exportar unida** gera `cena-NN-…-completa.mp4` para conferência. Os blocos continuam separados.
 
 ### Roteiro com IA
-1. Em **⚙ Configurações**, cadastre a chave e escolha o modelo do roteiro.
+1. Em **⚙ Configurações**, escolha o modelo do roteiro (por uma assinatura, como o Claude Code, ou por uma API com chave).
 2. No projeto, clique em **✦ Gerar cenas com IA** e cole o **roteiro completo** (cenas, ações, falas). Se quiser, informe a duração total.
 3. Escolha se as cenas geradas entram **depois das cenas atuais** ou **substituem todas** e, se quiser, marque **Depois de importar, gerar o filme**.
 4. Clique em **Gerar e importar cenas**. A LLM divide o roteiro em cenas e cada cena em blocos de até 20 s, usando os personagens e fundos do projeto. Quando a resposta passa na validação, o Takes **importa as cenas sozinho**.
@@ -280,7 +297,8 @@ server/media.js    FFmpeg/FFprobe
 server/store.js    projetos em JSON
 server/prompts.js  montagem dos prompts
 server/llm.js      arquivo para LLM e importação do roteiro
-server/ai.js       chaves de API, modelos e roteiro automático (Claude e OpenAI)
+server/ai.js       configurações, provedores, modelos e roteiro automático
+server/cli.js      Claude Code, Codex e Cursor pela linha de comando (assinaturas)
 server/review.js   revisão antes do bloco, juiz depois e conferência das aberturas (visão)
 public/            interface (JS puro, sem build)
 mac/               app nativo (Swift), ícone e build

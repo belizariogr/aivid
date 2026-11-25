@@ -77,18 +77,20 @@ test("stores API keys privately and lists text models of each provider", async (
   const s = await start(fetchImpl);
   try {
     const saved = await s.call("PUT", "/api/ai", { keys: { anthropic: " sk-ant-123456 ", openai: "sk-openai-9876" } });
-    assert.deepEqual(saved.data.providers.map((p) => [p.id, p.configured, p.hint]), [["anthropic", true, "…3456"], ["openai", true, "…9876"]]);
+    const apis = (data) => data.providers.filter((p) => !p.cli);
+    assert.deepEqual(apis(saved.data).map((p) => [p.id, p.configured, p.hint]), [["anthropic", true, "…3456"], ["openai", true, "…9876"]]);
+    assert.deepEqual(saved.data.providers.filter((p) => p.cli).map((p) => p.id), ["claude-code", "codex", "cursor"]);
     assert.ok(!JSON.stringify(saved.data).includes("sk-ant"));
     const file = path.join(s.root, "ai.json");
     assert.equal(fs.statSync(file).mode & 0o777, 0o600);
     assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).keys.anthropic, "sk-ant-123456");
 
     const { data } = await s.call("GET", "/api/ai/models");
-    assert.deepEqual(data.models.map((m) => m.id), ["claude-opus-5-5", "claude-haiku-4-5", "gpt-5.1", "gpt-5.1-codex"]);
+    assert.deepEqual(data.models.filter((m) => ["anthropic", "openai"].includes(m.provider)).map((m) => m.id), ["claude-opus-5-5", "claude-haiku-4-5", "gpt-5.1", "gpt-5.1-codex"]);
     assert.deepEqual(data.errors, []);
 
     const removed = await s.call("PUT", "/api/ai", { keys: { openai: "" } });
-    assert.equal(removed.data.providers[1].configured, false);
+    assert.equal(removed.data.providers.find((p) => p.id === "openai").configured, false);
   } finally {
     s.close();
   }
@@ -327,7 +329,8 @@ test("the reviser gets the judge's problems and the rejected frames", async () =
   assert.equal(r.block.continuity, "cut", "o 1º bloco mantém a ligação");
   const text = bodies[0].messages[0].content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
   assert.match(text, /O portão segue fechado/);
-  assert.match(text, /Rejected take, middle frame/);
+  assert.match(text, /Rejected take, frame at 2\.0 s of 6\.0 s/);
+  assert.match(text, /Rejected take, last frame/);
   assert.match(bodies[0].system, /quality judge just rejected/);
 });
 
