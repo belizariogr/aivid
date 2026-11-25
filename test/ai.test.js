@@ -164,3 +164,96 @@ test("generates with OpenAI and reports model errors", async () => {
     s.close();
   }
 });
+
+test("the continuity reviewer sends the rendered frames and validates the reply", async () => {
+  const { ContinuityReviewer } = await import("../server/review.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "takes-review-"));
+  const file = (name) => (fs.writeFileSync(path.join(dir, name), "x"), path.join(dir, name));
+  const project = {
+    prePrompt: "Cardboard",
+    characters: [{ id: "teca", name: "Teca" }],
+    backgrounds: [{ id: "praca", name: "Praça", description: "square with a closed gate", image: file("praca.png") }],
+  };
+  const take = (id) => ({ id, file: file(`${id}.mp4`) });
+  const scene = {
+    title: "Portão",
+    backgroundId: "praca",
+    blocks: [
+      { id: "b1", prompt: "Wide, Teca opens the gate", duration: 6, continuity: "cut", takes: [take("t1")], selectedTakeId: "t1" },
+      { id: "b2", prompt: "Close-up of Teca", duration: 4, continuity: "continue", takes: [take("t2")], selectedTakeId: "t2" },
+      { id: "b3", prompt: "Wide shot of the square", duration: 5, continuity: "cut", start: { kind: "scene" }, takes: [], selectedTakeId: null },
+    ],
+  };
+  const replies = [
+    "not json",
+    JSON.stringify({ decision: "change", continuity: "cut", start: "block:1", prompt: "Wide shot; the gate stands wide open.", note: "Portão aberto.", reason: "A imagem da cena mostra o portão fechado." }),
+  ];
+  const bodies = [];
+  const fetchImpl = async (url, opts) => {
+    bodies.push(JSON.parse(opts.body));
+    return anthropicText(replies.shift());
+  };
+  const stills = [];
+  const media = { still: async (input, output, o) => (stills.push([path.basename(input), Boolean(o.last)]), fs.writeFileSync(output, "jpg"), output) };
+  const settings = { data: { model: { provider: "anthropic", id: "claude-opus-5-5" } }, key: () => "sk-test" };
+  const writer = { resolveModel: async (provider, id) => ({ provider, id, name: "Claude Opus 5.5", effort: true, adaptive: true }) };
+  const reviewer = new ContinuityReviewer({ settings, writer, media, fetchImpl });
+
+  const r = await reviewer.review({ project, scene, index: 2, work: dir, startImage: project.backgrounds[0].image });
+  assert.equal(r.changed, true);
+  assert.deepEqual(r.block.start, { kind: "block", id: "b1" });
+  assert.equal(r.block.prompt, "Wide shot; the gate stands wide open.");
+  assert.match(r.model, /Opus 5.5/);
+  // Últimos quadros reais dos blocos 1 e 2, a imagem planejada (a da cena) e o fundo.
+  assert.deepEqual(stills, [["t1.mp4", true], ["t2.mp4", true], ["praca.png", false], ["praca.png", false]]);
+  const content = bodies[0].messages[0].content;
+  assert.equal(content.filter((c) => c.type === "image").length, 4);
+  assert.equal(content.find((c) => c.type === "image").source.media_type, "image/jpeg");
+  assert.match(content[0].text, /"next": true/);
+  assert.equal(bodies[0].output_config.effort, "medium");
+  assert.match(bodies[0].system, /continuity supervisor/);
+  // A resposta inválida volta para a LLM corrigir uma vez.
+  assert.equal(bodies[1].messages.length, 3);
+
+  // Apontar para um bloco que ainda não foi gerado é recusado.
+  replies.push(JSON.stringify({ continuity: "cut", start: "block:3", prompt: "x" }), JSON.stringify({ continuity: "cut", start: "block:3", prompt: "x" }));
+  await assert.rejects(reviewer.review({ project, scene, index: 2, work: dir }), /resposta inválida/);
+});
+
+test("the judge sees the take, the previous block and the character references", async () => {
+  const { ContinuityReviewer } = await import("../server/review.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "takes-judge-"));
+  const file = (name) => (fs.writeFileSync(path.join(dir, name), "x"), path.join(dir, name));
+  const project = {
+    prePrompt: "",
+    characters: [{ id: "teca", name: "Teca", photo: file("teca.png"), refs: [{ view: "body", file: file("teca-body.png") }] }],
+    backgrounds: [],
+  };
+  const scene = {
+    title: "Portão",
+    characterIds: ["teca"],
+    blocks: [
+      { id: "b1", prompt: "Teca opens the gate", duration: 6, continuity: "cut", takes: [{ id: "t1", file: file("t1.mp4") }], selectedTakeId: "t1" },
+      { id: "b2", prompt: "Teca walks in", state: "The gate is open.", duration: 4, continuity: "continue", characterIds: null, takes: [{ id: "t2", file: file("t2.mp4") }], selectedTakeId: "t2" },
+    ],
+  };
+  const replies = [JSON.stringify({ pass: false, score: 4, problems: ["O portão aparece fechado."], reason: "Estado errado." })];
+  const bodies = [];
+  const fetchImpl = async (url, opts) => (bodies.push(JSON.parse(opts.body)), anthropicText(replies.shift()));
+  const stills = [];
+  const media = {
+    probe: async () => ({ duration: 4, fps: 24, frames: 96 }),
+    still: async (input, output, o) => (stills.push([path.basename(input), o.last ? "last" : o.time ?? "image"]), fs.writeFileSync(output, "jpg"), output),
+  };
+  const reviewer = new ContinuityReviewer({
+    settings: { data: { model: { provider: "anthropic", id: "claude-opus-5-5" } }, key: () => "k" },
+    writer: { resolveModel: async (provider, id) => ({ provider, id, name: "Opus" }) },
+    media,
+    fetchImpl,
+  });
+  const v = await reviewer.judge({ project, scene, index: 1, take: scene.blocks[1].takes[0], work: dir });
+  assert.deepEqual([v.pass, v.score, v.problems], [false, 4, ["O portão aparece fechado."]]);
+  assert.deepEqual(stills, [["t1.mp4", "last"], ["t2.mp4", 0], ["t2.mp4", 2], ["t2.mp4", "last"], ["teca.png", "image"], ["teca-body.png", "image"]]);
+  assert.match(bodies[0].messages[0].content[0].text, /State that must hold: The gate is open\./);
+  assert.match(bodies[0].system, /quality judge/);
+});

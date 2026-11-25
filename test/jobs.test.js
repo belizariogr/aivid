@@ -346,3 +346,241 @@ test("a generation lost while closed becomes interrupted and can be resumed", { 
   const scene = store.get(projectId).scenes[0];
   assert.deepEqual(scene.blocks.map((_, i) => blockState(scene, i)), ["ready", "ready"]);
 });
+
+test("a cut can open from the last frame of an earlier block and goes stale with it", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  const queue = new JobQueue({ store, ltx });
+  const p = store.create("Portão");
+  store.edit(p.id, {
+    outputDir: path.join(root, "out"),
+    scenes: [
+      {
+        id: "s",
+        title: "Portão",
+        blocks: [
+          { id: "b1", prompt: "Wide shot, she opens the gate", duration: 2 },
+          { id: "b2", prompt: "Close-up of her face", duration: 2, continuity: "cut", start: { kind: "none" } },
+          { id: "b3", prompt: "Back to the wide shot, the gate stands open", duration: 2, continuity: "cut", start: { kind: "block", id: "b1" } },
+          { id: "b4", prompt: "Opens from a later block", duration: 2, continuity: "cut", start: { kind: "block", id: "b4" } },
+        ],
+      },
+    ],
+  });
+  queue.addScene(p.id, "s");
+  await waitIdle(queue);
+  const job = queue.jobs[0];
+  assert.equal(job.status, "error");
+  assert.match(job.error, /bloco 4 começa do último quadro do bloco 4/);
+  assert.equal(ltx.calls.length, 3, "o erro do bloco 4 não é repetido");
+  assert.equal(ltx.calls[1][1].imagePath, undefined, "corte só com o texto");
+  assert.match(ltx.calls[2][1].imagePath, /bloco-03-quadro-inicial\.png$/);
+  assert.match(ltx.calls[2][1].prompt, /opening frame/);
+
+  let scene = store.get(p.id).scenes[0];
+  const take3 = selectedTake(scene.blocks[2]);
+  assert.equal(take3.basedOnBlock, "b1");
+  assert.equal(take3.basedOn, selectedTake(scene.blocks[0]).id);
+  assert.deepEqual([0, 1, 2].map((i) => blockState(scene, i)), ["ready", "ready", "ready"]);
+
+  // Refazer o bloco 1 deixa desatualizado o corte que saiu do fim dele, mas não o corte só com texto.
+  queue.addScene(p.id, "s", { only: "b1" });
+  await waitIdle(queue);
+  scene = store.get(p.id).scenes[0];
+  assert.deepEqual([0, 1, 2].map((i) => blockState(scene, i)), ["ready", "ready", "stale"]);
+});
+
+test("the continuity review can change a block before it renders, and a failed review keeps the plan", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  const seen = [];
+  const reviewer = {
+    async review({ scene, index, startImage }) {
+      seen.push({ index, startImage, rendered: scene.blocks.map((b) => Boolean(selectedTake(b))) });
+      if (index === 2) throw new Error("sem rede");
+      return { changed: true, block: { continuity: "cut", start: { kind: "block", id: "b1" }, prompt: "Wide again, the gate stands open", note: "Voltou ao plano aberto." }, reason: "O bloco 2 terminou em close.", model: "Fake" };
+    },
+  };
+  const queue = new JobQueue({ store, ltx, reviewer });
+  const p = store.create("Revisão");
+  store.edit(p.id, {
+    outputDir: path.join(root, "out"),
+    settings: { review: true },
+    scenes: [{ id: "s", title: "Portão", blocks: [{ id: "b1", prompt: "Opens the gate", duration: 2 }, { id: "b2", prompt: "Close-up", duration: 2, continuity: "frame" }, { id: "b3", prompt: "Waits", duration: 2, continuity: "continue" }] }],
+  });
+  queue.addScene(p.id, "s");
+  await waitIdle(queue);
+  const job = queue.jobs[0];
+  assert.equal(job.status, "complete", job.error);
+  assert.deepEqual(seen.map((x) => x.index), [1, 2], "o 1º bloco não tem quadro anterior para revisar");
+  assert.deepEqual(seen[0].rendered, [true, false, false]);
+
+  const scene = store.get(p.id).scenes[0];
+  const b2 = scene.blocks[1];
+  assert.equal(b2.continuity, "cut");
+  assert.deepEqual(b2.start, { kind: "block", id: "b1" });
+  assert.equal(b2.review.changed, true);
+  assert.equal(b2.review.before.continuity, "frame");
+  assert.equal(ltx.calls[1][1].prompt.includes("Wide again, the gate stands open"), true);
+  assert.match(ltx.calls[1][1].imagePath, /bloco-02-quadro-inicial\.png$/);
+  assert.equal(selectedTake(b2).basedOnBlock, "b1");
+  assert.equal(scene.blocks[2].review, null);
+  assert.match(job.warnings[0], /Bloco 3: a revisão de continuidade falhou \(sem rede\)/);
+  assert.equal(ltx.calls[2][0], "extend", "o bloco 3 seguiu o plano");
+
+  // Uma edição antiga da interface (sem ter visto a revisão) não desfaz o ajuste.
+  store.edit(p.id, { scenes: [{ ...scene, blocks: scene.blocks.map((b) => ({ ...b, review: null, prompt: b.id === "b2" ? "stale edit" : b.prompt })) }] });
+  assert.equal(store.get(p.id).scenes[0].blocks[1].prompt, "Wide again, the gate stands open");
+});
+
+test("a cut can open from an image generated for it, reused by later renders", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  const queue = new JobQueue({ store, ltx });
+  const p = store.create("Abertura");
+  store.edit(p.id, {
+    outputDir: path.join(root, "out"),
+    scenes: [
+      {
+        id: "s",
+        title: "Portão",
+        blocks: [
+          { id: "b1", prompt: "Wide, she opens the gate", duration: 2 },
+          { id: "b2", prompt: "Reverse angle", duration: 2, continuity: "cut", state: "The gate stands wide open.", opening: "Low angle from inside the square, the open gate behind her.", start: { kind: "keyframe", ref: { kind: "block", id: "b1" } } },
+        ],
+      },
+    ],
+  });
+  queue.addScene(p.id, "s");
+  await waitIdle(queue);
+  assert.equal(queue.jobs[0].status, "complete", queue.jobs[0].error);
+  assert.deepEqual(ltx.calls.map((c) => c[0]), ["generate", "image", "generate"]);
+  const image = ltx.calls[1][1];
+  assert.match(image.prompt, /Low angle from inside the square/);
+  assert.match(image.prompt, /Current state: The gate stands wide open\./);
+  assert.match(image.imagePath, /referencia/, "parte do último quadro do bloco 1");
+  let project = store.get(p.id);
+  const b2 = project.scenes[0].blocks[1];
+  const preview = project.previews.find((x) => x.id === b2.start.id);
+  assert.equal(preview.kind, "keyframe");
+  assert.ok(preview.file.includes(path.join("out", "previas")));
+  assert.equal(ltx.calls[2][1].imagePath, preview.file);
+  assert.match(ltx.calls[2][1].prompt, /Current state: The gate stands wide open\./);
+
+  // Gerar o bloco de novo reaproveita a imagem; uma edição da interface não a descarta.
+  store.edit(p.id, { scenes: [{ ...project.scenes[0], blocks: project.scenes[0].blocks.map((b) => ({ ...b, start: b.start.kind === "keyframe" ? { ...b.start, id: null } : b.start })) }] });
+  queue.addScene(p.id, "s", { only: "b2" });
+  await waitIdle(queue);
+  assert.deepEqual(ltx.calls.map((c) => c[0]), ["generate", "image", "generate", "generate"]);
+  assert.equal(ltx.calls[3][1].imagePath, preview.file);
+
+  // Sem o Z-Image, usa a referência e avisa.
+  ltx.generateImage = async () => {
+    const { LtxError } = await import("../server/ltx.js");
+    throw new LtxError("sem z-image", { code: "NO_IMAGE_MODEL" });
+  };
+  project = store.get(p.id);
+  store.update(p.id, (x) => void (x.scenes[0].blocks[1].start.id = null));
+  queue.addScene(p.id, "s", { only: "b2" });
+  await waitIdle(queue);
+  const job = queue.jobs.at(-1);
+  assert.equal(job.status, "complete", job.error);
+  assert.match(job.warnings[0], /sem o Z-Image/);
+  assert.match(ltx.calls.at(-1)[1].imagePath, /referencia/);
+});
+
+test("the judge asks for retakes and keeps the best take when none passes", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  const scores = { b1: [9], b2: [3, 6, 4] };
+  const reviewer = {
+    async judge({ scene, index }) {
+      const id = scene.blocks[index].id;
+      const score = scores[id].shift();
+      return { pass: score >= 7, score, problems: score >= 7 ? [] : ["A ação não aconteceu."], reason: `nota ${score}`, model: "Fake" };
+    },
+  };
+  const queue = new JobQueue({ store, ltx, reviewer });
+  const p = store.create("Juiz");
+  store.edit(p.id, {
+    outputDir: path.join(root, "out"),
+    settings: { judge: true, retakes: 2, seed: 10 },
+    scenes: [{ id: "s", title: "Cena", blocks: [{ id: "b1", prompt: "a", duration: 2 }, { id: "b2", prompt: "b", duration: 2, continuity: "cut", start: { kind: "none" } }] }],
+  });
+  queue.addScene(p.id, "s");
+  await waitIdle(queue);
+  const job = queue.jobs[0];
+  assert.equal(job.status, "complete", job.error);
+  const scene = store.get(p.id).scenes[0];
+  assert.equal(scene.blocks[0].takes.length, 1);
+  assert.equal(scene.blocks[1].takes.length, 3, "1 take + 2 retakes");
+  assert.deepEqual(ltx.calls.slice(1).map((c) => c[1].seed), [11, 11 + 7919, 11 + 2 * 7919], "cada retake muda a seed");
+  const best = selectedTake(scene.blocks[1]);
+  assert.equal(best.judge.score, 6);
+  assert.equal(best.retake, 1);
+  assert.match(job.warnings[0], /Bloco 2: nenhum take passou no juiz depois de 3 tentativa\(s\); ficou o de nota 6/);
+  const { attention } = await import("../server/jobs.js");
+  const items = attention(store.get(p.id));
+  assert.deepEqual(items.map((i) => [i.block, i.kind]), [[2, "judge"]]);
+});
+
+test("a scene can open from the last frame of the previous scene, and the film is joined with a report", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  const queue = new JobQueue({ store, ltx });
+  const p = store.create("Meu Filme");
+  store.edit(p.id, {
+    outputDir: path.join(root, "out"),
+    scenes: [
+      { id: "s1", title: "Um", blocks: [{ id: "a1", prompt: "a", duration: 2 }, { id: "a2", prompt: "b", duration: 2, continuity: "continue" }] },
+      { id: "s2", title: "Dois", start: { kind: "previous" }, blocks: [{ id: "c1", prompt: "c", duration: 3 }] },
+      { id: "s3", title: "Três", blocks: [{ id: "d1", prompt: "", duration: 2 }] },
+    ],
+  });
+  const r = queue.addFilm(p.id);
+  assert.equal(r.added.length, 3);
+  await waitIdle(queue);
+  const film = queue.jobs.find((j) => j.kind === "film");
+  assert.equal(film.status, "complete", film.error);
+  const project = store.get(p.id);
+  const c1 = selectedTake(project.scenes[1].blocks[0]);
+  assert.equal(c1.basedOnScene, "s1");
+  assert.equal(c1.basedOnBlock, "a2");
+  assert.match(ltx.calls[2][1].imagePath, /quadro-inicial\.png$/);
+  assert.equal(blockState(project.scenes[1], 0, project), "ready");
+  assert.equal((await media.probe(film.result.file)).frames, (2 + 2 + 3 + 2) * 24);
+  assert.match(fs.readFileSync(film.result.report, "utf8"), /# Meu Filme/);
+  assert.ok(film.result.file.endsWith("meu-filme-filme.mp4"));
+
+  // Refazer o último bloco da cena 1 deixa a abertura da cena 2 desatualizada.
+  queue.addScene(p.id, "s1", { only: "a2" });
+  await waitIdle(queue);
+  const after = store.get(p.id);
+  assert.equal(blockState(after.scenes[1], 0, after), "stale");
+});
+
+test("character reference sheets are generated from the photo", { skip: !ffmpeg && "ffmpeg ausente" }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  const queue = new JobQueue({ store, ltx });
+  const p = store.create("Fichas");
+  store.edit(p.id, { characters: [{ id: "ana", name: "Ana", appearance: "short black hair" }] });
+  const photo = path.join(root, "ana.png");
+  fs.writeFileSync(photo, "x");
+  store.update(p.id, (x) => void (x.characters[0].photo = photo));
+  queue.addCharsheet(p.id, "ana");
+  await waitIdle(queue);
+  assert.equal(queue.jobs[0].status, "complete", queue.jobs[0].error);
+  const refs = store.get(p.id).characters[0].refs;
+  assert.deepEqual(refs.map((r) => r.view), ["front", "profile", "body"]);
+  assert.ok(refs.every((r) => fs.existsSync(r.file)));
+  assert.equal(ltx.calls[2][1].height, 1152);
+  assert.equal(ltx.calls[0][1].imagePath, photo);
+  assert.match(ltx.calls[1][1].prompt, /Side profile/);
+});

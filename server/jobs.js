@@ -9,8 +9,8 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { newId, findScene, selectedTake, slug } from "./store.js";
-import { videoPrompt, previewPrompt, avatarPrompt, imageSize } from "./prompts.js";
+import { newId, findScene, selectedTake, slug, blockState } from "./store.js";
+import { videoPrompt, previewPrompt, avatarPrompt, keyframePrompt, referencePrompt, REFERENCE_VIEWS, imageSize } from "./prompts.js";
 import { renderDuration } from "./ltx.js";
 import * as media from "./media.js";
 
@@ -29,6 +29,59 @@ export function startImage(project, scene) {
   return null;
 }
 
+// O que abre o bloco nos modos "start" e "cut": a escolha do corte ou, no 1º bloco, a da cena.
+export function openingSpec(scene, index) {
+  if (index > 0) return scene.blocks[index]?.start ?? { kind: "scene", id: null };
+  return scene.start?.kind ? scene.start : { kind: "none", id: null };
+}
+
+// Resolve a abertura em { image }, { source: { scene, block, take } } (quadro a extrair na hora)
+// ou { generate: { ref } } (abertura a gerar com o Z-Image a partir da referência `ref`).
+export function resolveStart(project, scene, index, spec = openingSpec(scene, index), depth = 0) {
+  const n = index + 1;
+  const kind = spec?.kind ?? "scene";
+  if (kind === "none") return { image: null };
+  if (kind === "background" || kind === "preview") {
+    const file = kind === "background" ? project.backgrounds.find((b) => b.id === spec.id)?.image : project.previews.find((p) => p.id === spec.id)?.file;
+    if (!file || !fs.existsSync(file)) throw fatal(`A imagem inicial do bloco ${n} (${kind === "background" ? "fundo" : "prévia"}) não existe mais. Escolha outra.`);
+    return { image: file };
+  }
+  if (kind === "block") {
+    const from = scene.blocks.findIndex((b) => b.id === spec.id);
+    if (from < 0) throw fatal(`O bloco ${n} começa do último quadro de um bloco que foi removido. Escolha outra imagem inicial.`);
+    if (from >= index) throw fatal(`O bloco ${n} começa do último quadro do bloco ${from + 1}, que vem depois dele. Escolha um bloco anterior.`);
+    const take = selectedTake(scene.blocks[from]);
+    if (!take) throw fatal(`O bloco ${n} começa do último quadro do bloco ${from + 1}, que ainda não foi gerado.`);
+    if (!fs.existsSync(take.file)) throw fatal(`O vídeo do bloco ${from + 1} não está mais em ${take.file}.`);
+    return { source: { scene, block: scene.blocks[from], take } };
+  }
+  if (kind === "previous") {
+    const at = project.scenes.findIndex((s) => s.id === scene.id);
+    const before = project.scenes[at - 1];
+    if (!before?.blocks.length) throw fatal(`A cena "${scene.title}" abre do último quadro da cena anterior, mas não há cena anterior com blocos.`);
+    const last = before.blocks.at(-1);
+    const take = selectedTake(last);
+    if (!take) throw fatal(`A cena "${scene.title}" abre do último quadro da cena anterior, que ainda não foi gerada até o fim.`);
+    if (!fs.existsSync(take.file)) throw fatal(`O vídeo do último bloco da cena anterior não está mais em ${take.file}.`);
+    return { source: { scene: before, block: last, take } };
+  }
+  if (kind === "keyframe") {
+    const file = spec.id ? project.previews.find((p) => p.id === spec.id)?.file : null;
+    if (file && fs.existsSync(file)) return { image: file, keyframe: true };
+    return depth ? { image: null } : { generate: { ref: spec.ref ?? { kind: "scene", id: null } } };
+  }
+  // "scene": a abertura da cena (se ela ainda vai ser gerada, nada).
+  if (index === 0 || depth > 1) {
+    const image = startImage(project, scene);
+    return { image: image && fs.existsSync(image) ? image : null };
+  }
+  const opening = resolveStart(project, scene, 0, openingSpec(scene, 0), depth + 1);
+  return opening.generate ? { image: null } : opening;
+}
+
+// Compatível com a versão anterior: só para blocos de corte.
+export const cutStart = (project, scene, index) => resolveStart(project, scene, index);
+
 // Erro que não se resolve gerando de novo (falta algo que só o usuário pode corrigir).
 const fatal = (message) => Object.assign(new Error(message), { retry: false });
 
@@ -42,15 +95,47 @@ function requireOutput(project) {
   }
 }
 
+// O que ainda precisa de uma pessoa: blocos sem vídeo, desatualizados, sem arquivo ou reprovados
+// pelo juiz (mesmo depois dos retakes).
+export function attention(project) {
+  const items = [];
+  project.scenes.forEach((scene, si) =>
+    scene.blocks.forEach((b, bi) => {
+      const where = { sceneId: scene.id, blockId: b.id, scene: si + 1, block: bi + 1, sceneTitle: scene.title };
+      const st = blockState(scene, bi, project);
+      const take = selectedTake(b);
+      if (st === "empty") items.push({ ...where, kind: "empty", message: "Ainda não foi gerado." });
+      else if (st === "missing") items.push({ ...where, kind: "missing", message: "O arquivo do vídeo sumiu." });
+      else if (st === "stale") items.push({ ...where, kind: "stale", message: "O bloco de origem mudou depois desta geração." });
+      if (take?.judge && !take.judge.pass)
+        items.push({ ...where, kind: "judge", message: `Reprovado pelo juiz (nota ${take.judge.score}): ${[take.judge.reason, ...(take.judge.problems ?? [])].filter(Boolean).join(" ")}` });
+    }),
+  );
+  return items;
+}
+
+function report(project, items, film) {
+  const lines = [`# ${project.name}`, "", film ? `Filme: ${film}` : "Nenhum bloco gerado para unir.", ""];
+  const blocks = project.scenes.reduce((n, s) => n + s.blocks.length, 0);
+  lines.push(`${project.scenes.length} cenas, ${blocks} blocos.`, "");
+  if (!items.length) lines.push("Nada precisa de revisão.");
+  else {
+    lines.push(`## Precisa de você (${items.length})`, "");
+    for (const i of items) lines.push(`- Cena ${i.scene} (${i.sceneTitle}), bloco ${i.block}: ${i.message}`);
+  }
+  return lines.join("\n") + "\n";
+}
+
 const ACTIVE = ["queued", "running"];
 const RESUMABLE = ["interrupted", "error", "cancelled"];
 
 export class JobQueue {
   // `file` guarda a fila em disco: se o Takes fechar no meio de uma geração, ao abrir de novo
   // ele reconhece a geração que o LTX continuou fazendo, mostra o progresso e salva o resultado.
-  constructor({ store, ltx, onChange = () => {}, mediaLib = media, file = null }) {
+  constructor({ store, ltx, onChange = () => {}, mediaLib = media, file = null, reviewer = null }) {
     this.store = store;
     this.ltx = ltx;
+    this.reviewer = reviewer;
     this.media = mediaLib;
     this.onChange = onChange;
     this.file = file;
@@ -211,6 +296,8 @@ export class JobQueue {
       }
       if (!job.cancelRequested) {
         if (job.kind === "video") await this.runVideo(job);
+        else if (job.kind === "film") await this.runFilm(job);
+        else if (job.kind === "charsheet") await this.runCharsheet(job);
         else if (job.result) {
           /* recuperada: já terminou */
         } else if (job.kind === "preview") await this.runPreview(job);
@@ -348,11 +435,15 @@ export class JobQueue {
 
   async finish(job, resultPath) {
     const inf = job.inflight;
-    if (inf.type === "block") await this.finishBlock(job, inf, resultPath);
-    else if (inf.type === "preview") await this.finishPreview(job, inf, resultPath);
-    else if (inf.type === "avatar") await this.finishAvatar(job, inf, resultPath);
+    let out;
+    if (inf.type === "block") out = await this.finishBlock(job, inf, resultPath);
+    else if (inf.type === "preview") out = await this.finishPreview(job, inf, resultPath);
+    else if (inf.type === "avatar") out = await this.finishAvatar(job, inf, resultPath);
+    else if (inf.type === "keyframe") out = await this.finishKeyframe(job, inf, resultPath);
+    else if (inf.type === "charsheet") out = await this.finishCharsheet(job, inf, resultPath);
     job.inflight = null;
     this.changed();
+    return out;
   }
 
   async runVideo(job) {
@@ -370,14 +461,78 @@ export class JobQueue {
       }
       job.current = { index, n: job.done.length + 1, total };
       job.progress = Math.round((job.done.length / total) * 100);
-      const ok = await this.renderBlockWithRetry(job, blockId);
+      const ok = await this.renderBlockJudged(job, blockId);
       if (!ok) return;
     }
   }
 
   // Um bloco que falha é gerado de novo algumas vezes antes de a tarefa parar com erro.
   // Não repete cancelamentos nem erros que só o usuário resolve (pasta de saída, bloco anterior ausente).
-  async renderBlockWithRetry(job, blockId) {
+  // Revisão antes, geração com novas tentativas e, com o juiz ligado, retakes até aprovar.
+  // Se nenhum take for aprovado, fica o de maior nota e o bloco aparece em "Precisa de você".
+  async renderBlockJudged(job, blockId) {
+    await this.reviewBlock(job, blockId);
+    if (job.cancelRequested) return false;
+    const verdicts = [];
+    for (let retake = 0; ; retake++) {
+      const ok = await this.renderBlockWithRetry(job, blockId, { retake });
+      if (!ok) return false;
+      const verdict = await this.judgeBlock(job, blockId);
+      if (!verdict) return true;
+      verdicts.push(verdict);
+      const max = Math.min(3, Math.max(0, Number(this.store.get(job.projectId).settings.retakes ?? 2) || 0));
+      if (verdict.pass) return true;
+      const n = (job.current?.index ?? 0) + 1;
+      if (retake >= max) {
+        const best = verdicts.reduce((a, b) => (b.score > a.score ? b : a));
+        this.store.update(job.projectId, (p) => {
+          const b = findScene(p, job.sceneId).blocks.find((x) => x.id === blockId);
+          if (b?.takes.some((t) => t.id === best.takeId)) b.selectedTakeId = best.takeId;
+        });
+        (job.warnings ??= []).push(`Bloco ${n}: nenhum take passou no juiz depois de ${verdicts.length} tentativa(s); ficou o de nota ${best.score}. ${best.reason}`);
+        this.changed();
+        return true;
+      }
+      job.phase = `Bloco ${n} reprovado pelo juiz (${verdict.reason || "sem motivo"}). Gerando outro take (${retake + 1} de ${max})…`;
+      this.changed();
+    }
+  }
+
+  // Juiz depois do bloco: a LLM olha quadros do take e diz se a ação, os personagens, o estado e a
+  // transição estão certos. Devolve null se o juiz estiver desligado ou falhar (aí o take fica).
+  async judgeBlock(job, blockId) {
+    const project = this.store.get(job.projectId);
+    if (!this.reviewer || !project.settings.judge) return null;
+    const scene = findScene(project, job.sceneId);
+    const index = scene.blocks.findIndex((b) => b.id === blockId);
+    const take = selectedTake(scene.blocks[index]);
+    if (!take || !fs.existsSync(take.file)) return null;
+    job.phase = `Bloco ${index + 1}: o juiz está conferindo o take`;
+    this.changed();
+    try {
+      const work = path.join(sceneFolder(project, scene), ".trabalho");
+      await fsp.mkdir(work, { recursive: true });
+      const v = await this.reviewer.judge({ project, scene, index, take, work, signal: job.abort?.signal });
+      const judge = { at: new Date().toISOString(), pass: v.pass, score: v.score, problems: v.problems, reason: v.reason, model: v.model };
+      this.store.update(job.projectId, (p) => {
+        const t = findScene(p, job.sceneId).blocks.find((x) => x.id === blockId)?.takes.find((x) => x.id === take.id);
+        if (t) t.judge = judge;
+      });
+      (job.judged ??= []).push({ blockIndex: index, pass: v.pass, score: v.score });
+      this.changed();
+      return { takeId: take.id, ...judge };
+    } catch (error) {
+      if (error.code === "ABORTED" || job.cancelRequested || job.abort?.signal.aborted) {
+        job.cancelRequested = true;
+        return null;
+      }
+      (job.warnings ??= []).push(`Bloco ${index + 1}: o juiz falhou (${error.message}). O take ficou sem conferência.`);
+      this.changed();
+      return null;
+    }
+  }
+
+  async renderBlockWithRetry(job, blockId, { retake = 0 } = {}) {
     const attempts = this.retryDelays.length + 1;
     for (let attempt = 1; ; attempt++) {
       const project = this.store.get(job.projectId);
@@ -389,7 +544,7 @@ export class JobQueue {
       }
       job.current = { ...job.current, index, attempt, attempts };
       try {
-        return await this.renderBlock(job, project, scene, index, { attempt, attempts });
+        return await this.renderBlock(job, project, scene, index, { attempt, attempts, retake });
       } catch (error) {
         const final = attempt >= attempts || error.retry === false || error.code === "ABORTED" || job.cancelRequested || this.stopped;
         if (final) {
@@ -408,6 +563,53 @@ export class JobQueue {
     }
   }
 
+  // Revisão de continuidade com IA (opcional, por projeto): a LLM vê os quadros já gerados e pode
+  // ajustar a continuidade, a imagem inicial e o prompt do bloco antes de ele ir para o LTX.
+  // Se a revisão falhar, o bloco segue o plano e a tarefa guarda um aviso.
+  async reviewBlock(job, blockId) {
+    const project = this.store.get(job.projectId);
+    if (!this.reviewer || !project.settings.review) return;
+    const scene = findScene(project, job.sceneId);
+    const index = scene.blocks.findIndex((b) => b.id === blockId);
+    const prev = index > 0 ? selectedTake(scene.blocks[index - 1]) : null;
+    if (!prev || !fs.existsSync(prev.file)) return; // sem quadro real para revisar
+    const block = scene.blocks[index];
+    job.phase = `Bloco ${index + 1}: revisando a continuidade com IA`;
+    this.changed();
+    const work = path.join(sceneFolder(project, scene), ".trabalho");
+    let startImage = null;
+    try {
+      await fsp.mkdir(work, { recursive: true });
+      if (block.continuity === "cut") startImage = resolveStart(project, scene, index).image ?? null;
+    } catch {
+      /* o erro da imagem inicial aparece na geração */
+    }
+    try {
+      const r = await this.reviewer.review({ project, scene, index, work, startImage, signal: job.abort?.signal });
+      const review = {
+        at: new Date().toISOString(),
+        changed: r.changed,
+        reason: r.reason,
+        model: r.model,
+        before: r.changed ? { continuity: block.continuity, start: block.start, prompt: block.prompt, note: block.note, state: block.state ?? "", opening: block.opening ?? "" } : null,
+      };
+      this.store.update(job.projectId, (p) => {
+        const b = findScene(p, job.sceneId).blocks.find((x) => x.id === blockId);
+        if (!b) return;
+        if (r.changed) Object.assign(b, r.block);
+        b.review = review;
+      });
+      (job.reviews ??= []).push({ blockIndex: index, changed: r.changed, reason: r.reason });
+    } catch (error) {
+      if (error.code === "ABORTED" || job.cancelRequested || job.abort?.signal.aborted) {
+        job.cancelRequested = true;
+        return;
+      }
+      (job.warnings ??= []).push(`Bloco ${index + 1}: a revisão de continuidade falhou (${error.message}). O bloco seguiu o plano.`);
+    }
+    this.changed();
+  }
+
   // Espera que termina antes se a tarefa for cancelada.
   pause(job, ms) {
     if (!ms) return Promise.resolve();
@@ -419,7 +621,7 @@ export class JobQueue {
     });
   }
 
-  async renderBlock(job, project, scene, index, { attempt = 1, attempts = 1 } = {}) {
+  async renderBlock(job, project, scene, index, { attempt = 1, attempts = 1, retake = 0 } = {}) {
     requireOutput(project);
     const block = scene.blocks[index];
     const s = project.settings;
@@ -439,7 +641,7 @@ export class JobQueue {
     while (fs.existsSync(path.join(folder, `${baseName(takeNo)}.mp4`))) takeNo++;
     const base = baseName(takeNo);
     const signal = job.abort.signal;
-    const label = `Bloco ${index + 1} de ${scene.blocks.length}${attempt > 1 ? ` (tentativa ${attempt} de ${attempts})` : ""}`;
+    const label = `Bloco ${index + 1} de ${scene.blocks.length}${retake ? ` (retake ${retake})` : ""}${attempt > 1 ? ` (tentativa ${attempt} de ${attempts})` : ""}`;
     const inflight = {
       type: "block",
       blockId: block.id,
@@ -453,11 +655,14 @@ export class JobQueue {
       wantedFrames: Math.round(block.duration * s.fps),
       audio: s.audio,
       prevTakeId: prev?.id ?? null,
+      sourceBlockId: mode === "continue" || mode === "frame" ? scene.blocks[index - 1].id : null,
+      sourceSceneId: null,
       usedImage: null,
       contextFrames: 0,
       contextFile: null,
       projectName: project.name,
       sceneTitle: scene.title,
+      retake,
     };
     let result;
 
@@ -475,8 +680,20 @@ export class JobQueue {
         inflight.usedImage = path.join(work, `${base}-quadro-inicial.png`);
         await this.media.extractFrame(prev.file, inflight.usedImage, { which: "last", signal });
       } else {
-        const image = startImage(project, scene);
-        inflight.usedImage = image && fs.existsSync(image) ? image : null;
+        const start = resolveStart(project, scene, index);
+        if (start.generate) {
+          inflight.usedImage = await this.makeKeyframe(job, project, scene, index, start.generate.ref, label);
+          if (job.cancelRequested) return false;
+        } else if (start.source) {
+          inflight.usedImage = path.join(work, `${base}-quadro-inicial.png`);
+          inflight.prevTakeId = start.source.take.id;
+          inflight.sourceBlockId = start.source.block.id;
+          inflight.sourceSceneId = start.source.scene.id !== scene.id ? start.source.scene.id : null;
+          await this.media.extractFrame(start.source.take.file, inflight.usedImage, { which: "last", signal });
+        } else {
+          inflight.usedImage = start.image;
+          inflight.prevTakeId = null;
+        }
       }
       const allowed = await this.ltx.durations(s.resolution, s.fps);
       inflight.request = {
@@ -489,7 +706,8 @@ export class JobQueue {
         fps: s.fps,
         audio: s.audio,
         aspectRatio: s.aspectRatio,
-        ...(s.seed != null ? { seed: (s.seed + index) % 2147483647 } : {}),
+        // Cada retake muda a seed fixa; sem seed, o LTX já sorteia uma.
+        ...(s.seed != null ? { seed: (s.seed + index + retake * 7919) % 2147483647 } : {}),
         ...(inflight.usedImage ? { imagePath: inflight.usedImage } : {}),
       };
       result = await this.withLtx(job, `${label}: gerando no LTX`, inflight, () => this.ltx.generateVideo(inflight.request, { signal }));
@@ -530,7 +748,10 @@ export class JobQueue {
       mode: inf.mode,
       duration: inf.duration,
       prompt: inf.prompt,
-      basedOn: inf.mode === "continue" || inf.mode === "frame" ? inf.prevTakeId : null,
+      basedOn: inf.sourceBlockId || inf.mode === "continue" || inf.mode === "frame" ? inf.prevTakeId : null,
+      basedOnBlock: inf.sourceBlockId ?? null,
+      basedOnScene: inf.sourceSceneId ?? null,
+      retake: inf.retake ?? 0,
       startImage: inf.usedImage,
     };
     await fsp.writeFile(
@@ -543,8 +764,167 @@ export class JobQueue {
       block.takes.push(take);
       block.selectedTakeId = take.id;
     });
-    job.done.push(inf.blockId);
+    if (!job.done.includes(inf.blockId)) job.done.push(inf.blockId);
     job.steps.push({ blockIndex: inf.index, file: output });
+  }
+
+  // Gera com o Z-Image o quadro de abertura de um corte (ou do 1º bloco), a partir da referência
+  // escolhida, e guarda como prévia. Com o juiz ligado, a LLM confere a imagem e pede outra uma vez.
+  // Sem o Z-Image, usa a própria referência e deixa um aviso.
+  async makeKeyframe(job, project, scene, index, ref, label) {
+    const block = scene.blocks[index];
+    const signal = job.abort.signal;
+    const work = path.join(sceneFolder(project, scene), ".trabalho");
+    await fsp.mkdir(work, { recursive: true });
+    let reference = null;
+    const from = resolveStart(project, scene, index, ref, 1);
+    if (from.source) {
+      reference = path.join(work, `bloco-${pad(index + 1)}-referencia-${Date.now().toString(36)}.png`);
+      await this.media.extractFrame(from.source.take.file, reference, { which: "last", signal });
+    } else reference = from.image ?? null;
+    const { width, height } = imageSize(project.settings.aspectRatio);
+    const request = {
+      prompt: keyframePrompt(project, scene, block),
+      width,
+      height,
+      numImages: 1,
+      ...(reference ? { imagePath: reference, strength: 0.65 } : {}),
+    };
+    const check = Boolean(this.reviewer && project.settings.judge);
+    const tries = check ? 2 : 1;
+    for (let t = 1; t <= tries; t++) {
+      let result;
+      try {
+        const inflight = { type: "keyframe", request, blockId: block.id, index, sceneTitle: scene.title };
+        result = await this.withLtx(job, `${label}: gerando a imagem de abertura`, inflight, () => this.ltx.generateImage(request, { signal }));
+      } catch (error) {
+        if (error.code !== "NO_IMAGE_MODEL") throw error;
+        (job.warnings ??= []).push(`Bloco ${index + 1}: sem o Z-Image no LTX, a abertura usou ${reference ? "a referência" : "só o texto"} em vez de uma imagem gerada.`);
+        return reference;
+      }
+      if (job.cancelRequested || result?.status !== "complete") return null;
+      if (!result.image_paths?.[0]) throw new Error("O LTX não devolveu a imagem de abertura.");
+      const file = await this.finish(job, result.image_paths[0]);
+      if (t === tries) return file;
+      job.phase = `Bloco ${index + 1}: o juiz está conferindo a imagem de abertura`;
+      this.changed();
+      const fresh = this.store.get(job.projectId);
+      const verdict = await this.reviewer
+        .checkKeyframe({ project: fresh, scene: findScene(fresh, job.sceneId), index, file, work, signal })
+        .catch((error) => (error.code === "ABORTED" || signal.aborted ? Promise.reject(error) : null));
+      if (!verdict || verdict.pass) return file;
+      (job.warnings ??= []).push(`Bloco ${index + 1}: a 1ª imagem de abertura foi recusada pelo juiz (${verdict.reason}); gerada outra.`);
+    }
+    return null;
+  }
+
+  async finishKeyframe(job, inf, source) {
+    const project = this.store.get(job.projectId);
+    requireOutput(project);
+    const dir = path.join(project.outputDir, "previas");
+    await fsp.mkdir(dir, { recursive: true });
+    const file = path.join(dir, `${slug(inf.sceneTitle, "cena")}-bloco-${pad(inf.index + 1)}-abertura-${stamp()}${path.extname(source) || ".png"}`);
+    await fsp.copyFile(source, file);
+    const preview = { id: newId(), sceneId: job.sceneId, backgroundId: null, kind: "keyframe", blockId: inf.blockId, prompt: inf.request.prompt, file, createdAt: new Date().toISOString() };
+    await fsp.writeFile(file.replace(/\.[^.]+$/, ".json"), JSON.stringify({ request: inf.request, createdAt: preview.createdAt }, null, 2));
+    this.store.update(job.projectId, (p) => {
+      p.previews.unshift(preview);
+      const scene = findScene(p, job.sceneId);
+      const block = scene.blocks.find((b) => b.id === inf.blockId);
+      const index = scene.blocks.indexOf(block);
+      if (index === 0 && scene.start.kind === "keyframe") scene.start = { ...scene.start, id: preview.id };
+      else if (block?.start?.kind === "keyframe") block.start = { ...block.start, id: preview.id };
+    });
+    return file;
+  }
+
+  // Filme completo: põe as cenas na fila e, no fim, une tudo e escreve o relatório.
+  addFilm(projectId, { missing = true } = {}) {
+    const project = this.store.get(projectId);
+    if (!project.scenes.length) throw Object.assign(new Error("Nenhuma cena para gerar."), { status: 409 });
+    if (this.jobs.some((j) => ACTIVE.includes(j.status) && j.kind === "film" && j.projectId === projectId))
+      throw Object.assign(new Error("O filme deste projeto já está na fila."), { status: 409 });
+    const added = [];
+    const skipped = [];
+    for (const scene of project.scenes) {
+      try {
+        added.push(this.addScene(projectId, scene.id, { missing }));
+      } catch (error) {
+        skipped.push({ sceneId: scene.id, title: scene.title, reason: error.message });
+      }
+    }
+    const film = this.add({ kind: "film", projectId, title: `${project.name} — filme completo` });
+    return { added, skipped, film };
+  }
+
+  async runFilm(job) {
+    const project = this.store.get(job.projectId);
+    requireOutput(project);
+    job.phase = "Unindo as cenas";
+    this.changed();
+    const files = [];
+    for (const scene of project.scenes)
+      scene.blocks.forEach((b, i) => {
+        const take = selectedTake(b);
+        if (take && fs.existsSync(take.file) && blockState(scene, i, project) !== "missing") files.push(take.file);
+      });
+    const name = slug(project.name, "filme");
+    const output = path.join(project.outputDir, `${name}-filme.mp4`);
+    if (files.length) await this.media.concat(files, output, { audio: project.settings.audio, signal: job.abort?.signal });
+    const items = attention(project);
+    const reportFile = path.join(project.outputDir, `${name}-relatorio.md`);
+    await fsp.writeFile(reportFile, report(project, items, files.length ? output : null));
+    job.result = { file: files.length ? output : null, report: reportFile, attention: items.length, blocks: files.length };
+    job.phase = items.length ? `Filme pronto. ${items.length} ponto(s) precisam de você.` : "Filme pronto.";
+  }
+
+  // Fichas de referência de um personagem: frente, perfil e corpo inteiro.
+  addCharsheet(projectId, characterId) {
+    const project = this.store.get(projectId);
+    const character = project.characters.find((c) => c.id === characterId);
+    if (!character) throw Object.assign(new Error("Personagem não encontrado."), { status: 404 });
+    if (this.jobs.some((j) => ACTIVE.includes(j.status) && j.kind === "charsheet" && j.characterId === characterId))
+      throw Object.assign(new Error("As fichas deste personagem já estão na fila."), { status: 409 });
+    return this.add({ kind: "charsheet", projectId, characterId, title: `Fichas de referência — ${character.name}` });
+  }
+
+  async runCharsheet(job) {
+    job.done ??= [];
+    for (const view of Object.keys(REFERENCE_VIEWS)) {
+      if (job.cancelRequested) return;
+      if (job.done.includes(view)) continue;
+      const project = this.store.get(job.projectId);
+      const character = project.characters.find((c) => c.id === job.characterId);
+      if (!character) throw new Error("Personagem não encontrado.");
+      const photo = character.photo && fs.existsSync(character.photo) ? character.photo : null;
+      const body = view === "body";
+      const request = {
+        prompt: referencePrompt(project, character, view),
+        width: 768,
+        height: body ? 1152 : 768,
+        numImages: 1,
+        ...(photo ? { imagePath: photo, strength: body ? 0.7 : 0.5 } : {}),
+      };
+      job.progress = Math.round((job.done.length / 3) * 100);
+      const result = await this.withLtx(job, `Gerando ${REFERENCE_VIEWS[view].label.toLowerCase()} de ${character.name}`, { type: "charsheet", view, request }, () =>
+        this.ltx.generateImage(request, { signal: job.abort.signal }),
+      );
+      if (job.cancelRequested || result?.status !== "complete") return;
+      if (!result.image_paths?.[0]) throw new Error("O LTX não devolveu a imagem.");
+      await this.finish(job, result.image_paths[0]);
+    }
+  }
+
+  async finishCharsheet(job, inf, source) {
+    const file = path.join(this.store.assetsDir(job.projectId, "character-refs"), `${job.characterId}-${inf.view}-${stamp()}${path.extname(source) || ".png"}`);
+    await fsp.copyFile(source, file);
+    this.store.update(job.projectId, (p) => {
+      const c = p.characters.find((x) => x.id === job.characterId);
+      if (!c) return;
+      c.refs = [...(c.refs ?? []).filter((r) => r.view !== inf.view), { view: inf.view, file, createdAt: new Date().toISOString() }];
+    });
+    if (!job.done.includes(inf.view)) job.done.push(inf.view);
+    return file;
   }
 
   async runPreview(job) {

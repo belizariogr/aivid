@@ -76,13 +76,31 @@ export async function cutFrames(input, output, { startFrame = 0, count, fps, aud
   return output;
 }
 
-// Último (ou primeiro) quadro do clipe como PNG.
-export async function extractFrame(input, output, { which = "last", signal } = {}) {
+// Último, primeiro ou um quadro no instante `time` (segundos) do clipe como PNG.
+export async function extractFrame(input, output, { which = "last", time = 0, signal } = {}) {
   const ffmpeg = await findBinary("ffmpeg");
+  const base = ["-hide_banner", "-loglevel", "error", "-y"];
   const args =
     which === "last"
-      ? ["-hide_banner", "-loglevel", "error", "-y", "-sseof", "-1", "-i", input, "-update", "1", output]
-      : ["-hide_banner", "-loglevel", "error", "-y", "-i", input, "-frames:v", "1", output];
+      ? [...base, "-sseof", "-1", "-i", input, "-update", "1", output]
+      : which === "at"
+        ? [...base, "-ss", Math.max(0, Number(time) || 0).toFixed(3), "-i", input, "-frames:v", "1", "-update", "1", output]
+        : [...base, "-i", input, "-frames:v", "1", output];
+  await exec(ffmpeg, args, { signal });
+  return output;
+}
+
+// Imagem pequena em JPEG para mandar a uma LLM: o último quadro de um vídeo, um quadro no instante
+// `time` ou uma imagem reduzida.
+export async function still(input, output, { last = false, time = null, width = 640, signal } = {}) {
+  const ffmpeg = await findBinary("ffmpeg");
+  const scale = ["-vf", `scale='min(${width},iw)':-2`, "-q:v", "4"];
+  const base = ["-hide_banner", "-loglevel", "error", "-y"];
+  const args = last
+    ? [...base, "-sseof", "-1", "-i", input, ...scale, "-update", "1", output]
+    : time != null
+      ? [...base, "-ss", Math.max(0, Number(time)).toFixed(3), "-i", input, ...scale, "-frames:v", "1", "-update", "1", output]
+      : [...base, "-i", input, ...scale, "-frames:v", "1", output];
   await exec(ffmpeg, args, { signal });
   return output;
 }

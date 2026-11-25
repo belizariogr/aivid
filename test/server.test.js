@@ -123,3 +123,41 @@ test("clones a project with its assets and clears all scenes", async () => {
     s.close();
   }
 });
+
+test("saves a frame of a take as a preview and undoes a continuity review", async () => {
+  const media = await import("../server/media.js");
+  const ffmpeg = await media.findBinary("ffmpeg").catch(() => null);
+  if (!ffmpeg) return;
+  const { execFileSync } = await import("node:child_process");
+  const s = await start();
+  try {
+    const p = await (await s.call("POST", "/api/projects", { name: "Quadros" })).json();
+    const out = path.join(s.root, "out");
+    const video = path.join(s.root, "b1.mp4");
+    execFileSync(ffmpeg, ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=s=160x90:r=24", "-t", "2", "-pix_fmt", "yuv420p", video]);
+    await s.call("PUT", `/api/projects/${p.id}`, { outputDir: out, scenes: [{ id: "s", title: "Cena", blocks: [{ id: "b1", prompt: "a" }, { id: "b2", prompt: "b", continuity: "cut" }] }] });
+    s.app.store.update(p.id, (x) => {
+      const [b1, b2] = x.scenes[0].blocks;
+      b1.takes.push({ id: "t1", file: video, mode: "start" });
+      b1.selectedTakeId = "t1";
+      Object.assign(b2, { prompt: "reviewed", start: { kind: "none", id: null }, review: { at: "2026-11-25T00:00:00Z", changed: true, reason: "r", before: { continuity: "cut", start: { kind: "scene", id: null }, prompt: "b", note: "" } } });
+    });
+
+    const r = await (await s.call("POST", `/api/projects/${p.id}/scenes/s/blocks/b1/frame`, { time: 1.2 })).json();
+    const preview = r.project.previews.find((x) => x.id === r.previewId);
+    assert.ok(fs.existsSync(preview.file) && preview.file.startsWith(path.join(out, "previas")));
+    assert.deepEqual(preview.fromBlock, { blockId: "b1", takeId: "t1", time: 1.2 });
+    // No fim do vídeo usa o último quadro em vez de passar do fim.
+    assert.equal((await s.call("POST", `/api/projects/${p.id}/scenes/s/blocks/b1/frame`, { time: 2 })).status, 200);
+    assert.equal((await s.call("POST", `/api/projects/${p.id}/scenes/s/blocks/b2/frame`, { time: 0 })).status, 404);
+
+    const undone = await (await s.call("POST", `/api/projects/${p.id}/scenes/s/blocks/b2/review/undo`)).json();
+    const b2 = undone.scenes[0].blocks[1];
+    assert.equal(b2.prompt, "b");
+    assert.deepEqual(b2.start, { kind: "scene", id: null });
+    assert.equal(b2.review.undone, true);
+    assert.equal((await s.call("POST", `/api/projects/${p.id}/scenes/s/blocks/b2/review/undo`)).status, 409);
+  } finally {
+    s.close();
+  }
+});

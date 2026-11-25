@@ -16,9 +16,41 @@ export function describeCharacter(c) {
   return `${c.name}${c.role ? ` (${clean(c.role)})` : ""}${parts ? `: ${parts}` : ""}`;
 }
 
-function setting(project, scene) {
-  const bg = project.backgrounds.find((b) => b.id === scene?.backgroundId);
+// Fundo que vale para o bloco. Um corte que abre de outro fundo (por exemplo, o mesmo lugar com o
+// portão aberto) troca a descrição dali em diante, até um corte voltar à imagem da cena.
+export function blockBackground(project, scene, block) {
+  const find = (id) => project.backgrounds.find((b) => b.id === id) ?? null;
+  const blocks = scene?.blocks ?? [];
+  let i = block ? blocks.findIndex((b) => b.id === block.id) : -1;
+  const seen = new Set();
+  while (i > 0 && !seen.has(i)) {
+    seen.add(i);
+    const b = blocks[i];
+    if (b.continuity === "cut") {
+      const own = b.start ?? { kind: "scene" };
+      // Uma abertura gerada herda o fundo da sua referência.
+      const start = own.kind === "keyframe" ? own.ref ?? { kind: "scene" } : own;
+      if (start.kind === "background" && find(start.id)) return find(start.id);
+      if (start.kind === "scene") break;
+      if (start.kind === "block") {
+        const from = blocks.findIndex((x) => x.id === start.id);
+        if (from < 0 || from >= i) break;
+        i = from;
+        continue;
+      }
+    }
+    i--;
+  }
+  return find(scene?.backgroundId);
+}
+
+function setting(project, scene, block = null) {
+  const bg = blockBackground(project, scene, block);
   return bg?.description ? `Setting: ${sentence(bg.description)}` : "";
+}
+
+function current(block) {
+  return clean(block?.state) ? `Current state: ${sentence(block.state)}` : "";
 }
 
 function cast(characters) {
@@ -36,7 +68,22 @@ const MODE_HINT = {
 
 export function videoPrompt(project, scene, block, { mode, hasImage = false }) {
   const hint = mode === "continue" ? MODE_HINT.continue : mode === "frame" ? MODE_HINT.frame : hasImage ? MODE_HINT.image : "";
-  return [clean(project.prePrompt), setting(project, scene), cast(sceneCharacters(project, scene, block)), clean(block.prompt), hint]
+  return [clean(project.prePrompt), setting(project, scene, block), current(block), cast(sceneCharacters(project, scene, block)), clean(block.prompt), hint]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+// Quadro de abertura gerado pelo Z-Image para um corte (ou para o 1º bloco da cena).
+export function keyframePrompt(project, scene, block) {
+  const opening = clean(block.opening) || clean(block.prompt);
+  return [
+    clean(project.prePrompt),
+    setting(project, scene, block),
+    current(block),
+    cast(sceneCharacters(project, scene, block)),
+    opening,
+    "Single still frame: the opening frame of this shot, cinematic composition, sharp, no motion blur.",
+  ]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -60,6 +107,24 @@ export function avatarPrompt(project, character, extra) {
     `Character portrait of ${describeCharacter(character)}`,
     clean(extra),
     "Head and shoulders, facing the camera, neutral background, even soft lighting, sharp focus on the face.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+// Fichas de referência de um personagem: o mesmo rosto e figurino em três vistas.
+export const REFERENCE_VIEWS = {
+  front: { label: "Frente", text: "Front view, head and shoulders, facing the camera, neutral expression." },
+  profile: { label: "Perfil", text: "Side profile view, head and shoulders, looking to the left." },
+  body: { label: "Corpo inteiro", text: "Full body view, standing, facing the camera, the whole outfit visible from head to feet." },
+};
+
+export function referencePrompt(project, character, view) {
+  return [
+    clean(project.prePrompt),
+    `Character reference sheet of ${describeCharacter(character)}`,
+    REFERENCE_VIEWS[view].text,
+    "Plain light gray background, even soft studio lighting, sharp focus, the same face, hair and outfit as the reference.",
   ]
     .filter(Boolean)
     .join("\n\n");

@@ -123,7 +123,7 @@ async function openaiModels(key, fetchImpl) {
 }
 
 // Respostas longas vão por streaming: um roteiro inteiro passa do tempo limite de uma resposta comum.
-async function streamAnthropic({ key, model, system, messages, signal, onText, fetchImpl }) {
+async function streamAnthropic({ key, model, system, messages, signal, onText, fetchImpl, effort = "high" }) {
   const body = {
     model: model.id,
     max_tokens: Math.min(model.maxTokens || 64000, 64000),
@@ -133,7 +133,7 @@ async function streamAnthropic({ key, model, system, messages, signal, onText, f
     messages,
   };
   if (model.adaptive) body.thinking = { type: "adaptive" };
-  if (model.effort) body.output_config = { effort: "high" };
+  if (model.effort) body.output_config = { effort };
   const headers = anthropicHeaders(key);
   if (ANTHROPIC_FALLBACK.has(model.id)) {
     headers["anthropic-beta"] = "server-side-fallback-2026-07-01";
@@ -182,6 +182,26 @@ async function streamOpenai({ key, model, system, messages, signal, onText, fetc
 }
 
 const STREAM = { anthropic: streamAnthropic, openai: streamOpenai };
+
+// Mensagem do usuário com texto e imagens no formato de cada provedor.
+// `parts`: [{ text }] ou [{ image: { mediaType, data } }] (data em base64).
+export function userMessage(provider, parts) {
+  const content = parts.map((part) => {
+    if (part.image) {
+      const { mediaType, data } = part.image;
+      return provider === "openai"
+        ? { type: "input_image", image_url: `data:${mediaType};base64,${data}` }
+        : { type: "image", source: { type: "base64", media_type: mediaType, data } };
+    }
+    return provider === "openai" ? { type: "input_text", text: part.text } : { type: "text", text: part.text };
+  });
+  return { role: "user", content };
+}
+
+// Uma resposta completa (com streaming por baixo, que não estoura o tempo limite).
+export function ask(provider, opts) {
+  return STREAM[provider]({ onText: () => {}, ...opts });
+}
 const LIST = { anthropic: anthropicModels, openai: openaiModels };
 
 export class ScriptWriter {
@@ -295,7 +315,7 @@ export class ScriptWriter {
         let errors;
         try {
           const data = extractJson(text);
-          parseScript(this.store.get(task.projectId), data);
+          parseScript(this.store.get(task.projectId), data, { strict: true });
           task.text = JSON.stringify(data, null, 2);
           break;
         } catch (error) {

@@ -49,7 +49,8 @@ Se o app fechar sozinho ou for encerrado à força, vale a primeira opção. Se 
 
 ### Projeto
 - **Pré-prompt**: instruções gerais (estilo, época, lente, luz, regras) que entram antes de todo prompt de vídeo e imagem.
-- **Prompt negativo**, resolução, proporção, FPS, seed, áudio e **contexto da continuação** (segundos do bloco anterior enviados ao LTX).
+- **Prompt negativo**, resolução, proporção, FPS, seed, áudio, **contexto da continuação** (segundos do bloco anterior enviados ao LTX), **revisão de continuidade com IA**, **juiz com IA** e **retakes** (veja abaixo).
+- **Gerar o filme completo**: gera o que falta, une o filme e escreve o relatório (veja "Do roteiro ao filme").
 - **Pasta de saída**: escolhida pelo seletor do macOS ou digitada.
 - **Gerar todas as cenas**: põe todas as cenas na fila do LTX, em ordem, e abre a aba Fila. **Só os pendentes** gera apenas os blocos que ainda não têm vídeo.
 - **Novas tentativas**: se um bloco falhar (erro do LTX, conexão que caiu, FFmpeg), ele é gerado de novo até mais duas vezes, com pausas de 5 s e 15 s. Só depois da terceira falha a tarefa para com erro e **Retomar** continua do bloco que falhou. Erros que só você resolve (pasta de saída ausente, bloco anterior sem vídeo) param na hora.
@@ -69,7 +70,80 @@ Uma cena é uma lista de blocos (2–20 s cada) com prompt, duração e elenco o
 |---|---|---|
 | **Continuar o movimento** (padrão) | Recorta os últimos segundos do bloco anterior (com quadros múltiplos de 8 + 1), envia para o `/api/extend` do LTX e salva **só o trecho novo**. | Mesmo plano, a câmera continua rodando. Melhor continuidade de movimento. |
 | **Partir do último quadro** | Extrai o último quadro do bloco anterior e o usa como imagem inicial (image-to-video). | Mudança calma de ação no mesmo plano. Mais rápido. |
-| **Corte** | Gera do zero, a partir da imagem inicial da cena ou só do texto. | Novo plano, ângulo ou lugar. |
+| **Corte** | Gera do zero, a partir da **imagem inicial do corte** (abaixo). | Novo plano, ângulo ou lugar. |
+
+#### Imagem inicial do corte
+
+O LTX não tem memória entre blocos: ele só sabe o que recebe naquele bloco (o texto e uma imagem inicial). Se um corte parte da imagem da cena, o lugar volta ao estado original do fundo: um portão aberto no bloco anterior aparece fechado de novo. Por isso cada corte escolhe de onde sai a sua imagem:
+
+| Opção | Quando usar |
+|---|---|
+| **Imagem inicial da cena** (padrão) | Nada visível mudou desde o começo da cena. |
+| **Gerar imagem de abertura** | Um ângulo ou enquadramento novo que precisa mostrar o estado atual. Antes do vídeo, o Z-Image gera o quadro de abertura a partir da descrição do quadro (**Quadro de abertura**, em inglês) e de uma referência: o último quadro de um bloco, um fundo, uma prévia, a imagem da cena ou nada. O prompt leva o cenário, o elenco e o estado atual. A imagem fica nas prévias e é reaproveitada nas próximas gerações do bloco até você clicar em **Gerar outra** ou mudar a referência ou a descrição. Sem o Z-Image instalado, o bloco usa a própria referência e a Fila mostra um aviso. |
+| **Último quadro do bloco N** | Voltar a um enquadramento que um bloco anterior deixou, já com o estado atual (portão aberto, fita faltando). |
+| **Fundo** | Uma variação do lugar que já mostra a mudança (por exemplo, "Praça com o portão aberto"). A descrição desse fundo passa a entrar no prompt dali em diante, no lugar da descrição do fundo da cena. |
+| **Prévia ou quadro salvo** | Qualquer imagem da aba Prévias, inclusive quadros salvos de um take. |
+| **Só o texto** | Nenhuma imagem combina com o novo plano. O prompt precisa descrever o lugar e o estado atual. |
+
+**Salvar quadro**, embaixo do vídeo do bloco, salva o quadro em que o player está parado como prévia (`previas/<cena>-bloco-NN-…png`). Serve para os casos em que nenhum fim de bloco serve. Por exemplo: o bloco 4 termina com zoom no rosto e o 5 volta ao plano aberto. Pare o vídeo do bloco 4 num momento ainda aberto, salve o quadro e escolha-o como imagem inicial do corte do bloco 5. O quadro também pode virar fundo (**Salvar como fundo**) ou base de uma prévia img2img.
+
+Cada bloco também tem:
+
+- **Estado atual** (em inglês): o que mudou no lugar e nos objetos em relação ao fundo, como "The gate stands wide open.". Entra no prompt do vídeo e no da imagem de abertura como `Current state: …`.
+- **Nota de continuidade** (não entra no prompt): para você e para a LLM registrarem o que precisa se manter e o que conferir.
+
+#### Continuidade entre cenas
+
+A imagem inicial do 1º bloco de uma cena pode ser:
+
+- **Último quadro da cena anterior**: para quando a cena retoma exatamente onde a anterior terminou. Se o último bloco da cena anterior for refeito, o 1º bloco desta fica **Desatualizado**.
+- **Gerar imagem de abertura**: gerada a partir da descrição do quadro de abertura do 1º bloco e de uma referência (um fundo, o último quadro da cena anterior ou nada).
+
+#### Juiz com IA e retakes
+
+Opcional, em **Projeto → Juiz com IA depois de cada bloco**, com o modelo de **Chaves de API…**. Depois de cada bloco, a LLM recebe:
+
+- o primeiro, o do meio e o último quadro do take;
+- o último quadro do bloco anterior;
+- a imagem de abertura usada;
+- a foto e a ficha de corpo inteiro de cada personagem do bloco.
+
+Ela reprova o take quando o problema seria percebido por quem assiste:
+
+- a ação não aconteceu;
+- um personagem está diferente da referência;
+- o estado não se manteve;
+- há defeito grave;
+- a emenda com o bloco anterior não funciona.
+
+Quando reprova, o Takes gera outro take até o limite de **Retakes se reprovar** (0 a 3; padrão 2). A seed fixa muda a cada retake. Se nenhum take passar, fica o de maior nota e o bloco entra em **Precisa de você**. O seletor de takes mostra a nota de cada um. Com o juiz ligado, as imagens de abertura geradas também são conferidas, e uma imagem recusada é gerada de novo uma vez.
+
+#### Fichas de referência dos personagens
+
+No personagem, **Gerar fichas** cria a partir da foto três imagens com o mesmo rosto e figurino: frente, perfil e corpo inteiro. O juiz e a conferência das aberturas usam essas fichas.
+
+#### Do roteiro ao filme
+
+- **Projeto → Gerar o filme completo** põe na fila os blocos pendentes de todas as cenas. No fim, une tudo em `<pasta de saída>/<projeto>-filme.mp4` e escreve `<projeto>-relatorio.md` com o que precisa de você.
+- No assistente de roteiro, **Importar e gerar o filme** faz o mesmo logo depois de importar.
+- A aba Projeto mostra **Precisa de você**: blocos sem vídeo, desatualizados, sem arquivo ou reprovados pelo juiz, com link para cada um.
+
+Com a revisão antes, o juiz depois, as aberturas geradas e as fichas dos personagens, o caminho sem interação é: colar o roteiro, **Gerar cenas**, **Importar e gerar o filme** e, no fim, olhar só o que está em **Precisa de você**.
+
+#### Revisão de continuidade com IA
+
+Opcional, em **Projeto → Revisar a continuidade com IA antes de cada bloco**. Usa o modelo escolhido em **Chaves de API…**. Antes de gerar cada bloco a partir do 2º, o Takes manda à LLM:
+
+- o plano da cena;
+- o último quadro que o LTX **realmente** gerou em cada bloco anterior (até 8);
+- a imagem inicial planejada para o bloco;
+- as imagens dos fundos.
+
+A LLM confere se o plano ainda funciona com o que saiu de verdade (a ação aconteceu? a câmera terminou mais perto que o previsto? o portão está aberto?). Ela pode trocar o modo de continuidade, a imagem inicial do corte, o prompt e a nota, sem mudar a ação, a duração nem o elenco.
+
+- O bloco mostra o que a IA mudou e por quê, com **Desfazer** para voltar ao plano anterior.
+- Se a revisão falhar (sem modelo, sem rede, resposta inválida depois de uma correção), o bloco segue o plano e a tarefa mostra um aviso na Fila.
+- Cada bloco revisado é uma chamada de API com imagens, cobrada na sua conta do provedor.
 
 Quando um bloco é gerado de novo, os blocos que continuavam dele ficam **Desatualizados**. Use **Daqui em diante** para refazer a sequência a partir desse ponto. Cada nova geração vira um take (`bloco-03_take-2.mp4`) e você escolhe qual take usar.
 
@@ -87,6 +161,24 @@ Gere imagens estáticas para ver como o ambiente vai ficar antes de gerar o víd
 1. Em **Chaves de API…**, cadastre a chave do Claude (Anthropic) e/ou da OpenAI (ChatGPT/Codex). Pode cadastrar as duas.
 2. Escolha o modelo. A lista vem da API de cada provedor com chave cadastrada (na OpenAI, só os modelos de texto).
 3. Cole o **roteiro completo** (cenas, ações, falas) e, se quiser, a duração total, e clique em **Gerar cenas**. A LLM divide o roteiro em cenas e cada cena em blocos de até 20 s, usando os personagens e fundos do projeto.
+
+   As instruções explicam à LLM como os blocos se encadeiam:
+
+   - o LTX não lembra do que mudou;
+   - o enquadramento do fim de um bloco passa para o próximo;
+   - o fundo mostra o lugar no estado original;
+   - o estado continua valendo nas cenas seguintes.
+
+   A LLM escolhe a abertura de cada corte (`start`, de preferência `keyframe` para ângulos novos) e a de cada cena (`previous` quando ela retoma a anterior). Também preenche o `state` de cada bloco em que algo mudou.
+
+   A resposta é validada, e o que falhar volta para a LLM corrigir:
+
+   - corte sem `start`;
+   - `block:N` que não é um bloco anterior;
+   - fundo inexistente;
+   - `keyframe` sem `opening`;
+   - bloco com menos de 3 s;
+   - fala que não cabe no bloco (com áudio ligado, mais de 3 palavras por segundo).
 4. O resultado aparece em **Revise e importe**: confira e importe como novas cenas.
 
 - As chaves ficam em `~/Library/Application Support/Takes/ai.json` (permissão só do seu usuário) e valem para todos os projetos. A interface nunca recebe a chave, só os últimos caracteres.
@@ -110,14 +202,21 @@ Formato do roteiro:
     "title": "Chegada",
     "synopsis": "Ana chega ao café e procura Bruno.",
     "backgroundId": "<id ou nome do fundo>",
+    "start": "background",
     "characterIds": ["<id ou nome>"],
     "blocks": [
       { "duration": 8, "continuity": "cut", "prompt": "English paragraph…" },
-      { "duration": 6, "continuity": "continue", "characterIds": ["<id>"], "prompt": "…" }
+      { "duration": 6, "continuity": "continue", "characterIds": ["<id>"], "prompt": "…", "note": "Termina em close." },
+      { "duration": 5, "continuity": "cut", "start": "block:1", "state": "The gate stands wide open.", "prompt": "…", "note": "Volta ao plano aberto do fim do bloco 1." },
+      { "duration": 7, "continuity": "cut", "start": "keyframe", "reference": "block:1", "opening": "Low angle from inside the square…", "state": "The gate stands wide open.", "prompt": "…" }
     ]
   }
 }
 ```
+
+- `start` da cena: `"background"` (abre da imagem do fundo), `"previous"` (último quadro da cena anterior), `"keyframe"` (gerada a partir do `opening` do bloco 1 e de `"reference"`: `"background"`, `"previous"`, `"background:<id>"` ou `"none"`) ou `"none"` (só o texto).
+- `start` de um corte: `"keyframe"` (com `opening` e `reference` opcional), `"block:N"` (bloco anterior da mesma cena), `"scene"`, `"background:<id ou nome>"` ou `"none"`. No roteiro automático é obrigatório. Na importação manual, sem ele o corte usa a imagem da cena, com um aviso.
+- `state`: o estado atual em inglês, quando difere do fundo.
 
 ## Saída
 
@@ -132,6 +231,8 @@ Formato do roteiro:
     bloco-02.mp4
     bloco-02_take-2.mp4
     cena-01-chegada-completa.mp4
+  <projeto>-filme.mp4      # Gerar o filme completo
+  <projeto>-relatorio.md   # o que precisa de você
 ```
 
 Renomear ou reordenar cenas depois de gerar muda o nome das próximas pastas. Os takes antigos continuam onde foram salvos.
@@ -158,6 +259,7 @@ server/store.js    projetos em JSON
 server/prompts.js  montagem dos prompts
 server/llm.js      arquivo para LLM e importação do roteiro
 server/ai.js       chaves de API, modelos e roteiro automático (Claude e OpenAI)
+server/review.js   revisão antes do bloco, juiz depois e conferência das aberturas (visão)
 public/            interface (JS puro, sem build)
 mac/               app nativo (Swift), ícone e build
 ```

@@ -112,13 +112,14 @@ function absorb(server) {
   const before = ownedSignature(local);
   const byId = (list) => new Map(list.map((x) => [x.id, x]));
   const sChars = byId(server.characters);
-  for (const c of local.characters) if (sChars.has(c.id)) c.photo = sChars.get(c.id).photo;
+  for (const c of local.characters) if (sChars.has(c.id)) Object.assign(c, { photo: sChars.get(c.id).photo, refs: sChars.get(c.id).refs ?? [] });
   for (const c of server.characters) if (!local.characters.some((x) => x.id === c.id)) local.characters.push(c);
   const sBgs = byId(server.backgrounds);
   local.backgrounds = local.backgrounds.filter((b) => sBgs.has(b.id));
   for (const b of local.backgrounds) b.image = sBgs.get(b.id).image;
   for (const b of server.backgrounds) if (!local.backgrounds.some((x) => x.id === b.id)) local.backgrounds.push(b);
   local.previews = server.previews;
+  local.attention = server.attention ?? [];
   const sScenes = byId(server.scenes);
   for (const s of server.scenes) if (!local.scenes.some((x) => x.id === s.id)) local.scenes.push(s);
   for (const s of local.scenes) {
@@ -133,6 +134,10 @@ function absorb(server) {
       b.takes = x.takes;
       b.selectedTakeId = x.selectedTakeId;
       b.state = x.state;
+      // A revisão de continuidade com IA pode ter mudado o bloco no servidor.
+      if (x.review?.at && x.review.at !== b.review?.at) Object.assign(b, { review: x.review, continuity: x.continuity, start: x.start, prompt: x.prompt, note: x.note, state: x.state, opening: x.opening });
+      // A imagem de abertura gerada é gravada pelo servidor.
+      if (x.start?.kind === "keyframe" && b.start?.kind === "keyframe") b.start.id = x.start.id;
     }
   }
   local.updatedAt = server.updatedAt;
@@ -142,10 +147,11 @@ function absorb(server) {
 }
 function ownedSignature(p) {
   return JSON.stringify([
-    p.characters.map((c) => [c.id, c.photo]),
+    p.characters.map((c) => [c.id, c.photo, (c.refs ?? []).map((r) => r.file)]),
+    (p.attention ?? []).length,
     p.backgrounds.map((b) => [b.id, b.image]),
     p.previews.map((x) => x.id),
-    p.scenes.map((s) => [s.id, s.start, s.blocks.map((b) => [b.id, b.selectedTakeId, b.state, b.takes.length])]),
+    p.scenes.map((s) => [s.id, s.start, s.blocks.map((b) => [b.id, b.selectedTakeId, b.state, b.takes.length, b.review?.at, b.start?.id, b.takes.map((t) => t.judge?.at)])]),
   ]);
 }
 
@@ -307,6 +313,37 @@ function generateAllSummary(p) {
   return `<p class="hint">Põe todas as cenas na fila do LTX, em ordem. ${p.scenes.length} ${p.scenes.length === 1 ? "cena" : "cenas"} · ${blocks.length} blocos · ${fmtTime(seconds)} de vídeo · ${done}/${blocks.length} prontos.</p>`;
 }
 
+function filmResult(p) {
+  const job = [...state.jobs].reverse().find((j) => j.kind === "film" && j.projectId === p.id);
+  if (!job) return "";
+  if (["queued", "running"].includes(job.status)) return `<p class="hint">Filme completo na fila: ${esc(job.phase || "")}</p>`;
+  if (job.status !== "complete" || !job.result) return job.error ? `<pre class="error">${esc(job.error)}</pre>` : "";
+  return `<div class="row">
+      ${job.result.file ? `<button class="btn small" data-action="reveal" data-path="${esc(job.result.file)}">Mostrar o filme</button>` : ""}
+      <button class="btn small ghost" data-action="reveal" data-path="${esc(job.result.report)}">Mostrar o relatório</button>
+      <small class="muted">${job.result.blocks} blocos unidos${job.result.attention ? ` · ${job.result.attention} ponto(s) para revisar` : ""}</small>
+    </div>`;
+}
+
+const ATTENTION_LABEL = { empty: "Não gerado", missing: "Arquivo ausente", stale: "Desatualizado", judge: "Reprovado" };
+
+function attentionPanel(p) {
+  const items = p.attention ?? [];
+  if (!items.length) return "";
+  const shown = items.slice(0, 40);
+  return `<section class="card attention">
+      <h3>Precisa de você (${items.length})</h3>
+      <p class="hint">Blocos sem vídeo, desatualizados, sem arquivo ou reprovados pelo juiz mesmo depois dos retakes.</p>
+      <ul>${shown
+        .map(
+          (i) => `<li><button class="link" data-action="goto-block" data-scene="${i.sceneId}" data-id="${i.blockId}">Cena ${i.scene} · bloco ${i.block}</button>
+            <span class="pill">${ATTENTION_LABEL[i.kind] ?? i.kind}</span> <small class="muted">${esc(i.kind === "judge" ? i.message : i.sceneTitle)}</small></li>`,
+        )
+        .join("")}</ul>
+      ${items.length > shown.length ? `<small class="muted">e mais ${items.length - shown.length}.</small>` : ""}
+    </section>`;
+}
+
 function overview() {
   const p = state.project;
   const s = p.settings;
@@ -335,6 +372,10 @@ function overview() {
         <label>Seed<input data-bind="p.settings.seed" data-type="number" type="number" min="0" value="${s.seed ?? ""}" placeholder="aleatória"></label>
         <label title="Quantos segundos do fim do bloco anterior o LTX recebe para continuar o movimento">Contexto da continuação<select data-bind="p.settings.contextSeconds" data-type="number">${[1, 2, 3, 4, 5].map((r) => option(r, `${r} s`, s.contextSeconds)).join("")}</select></label>
         <label class="check"><input type="checkbox" data-bind="p.settings.audio" ${s.audio ? "checked" : ""}> Gerar áudio</label>
+        <label class="check" title="Antes de cada bloco, a LLM vê o último quadro real dos blocos anteriores e a imagem inicial planejada e pode ajustar a continuidade, a imagem inicial e o prompt. Custa uma chamada de API por bloco."><input type="checkbox" data-bind="p.settings.review" data-rerender="1" ${s.review ? "checked" : ""}> Revisar a continuidade com IA antes de cada bloco</label>
+        <label class="check" title="Depois de cada bloco, a LLM olha quadros do take, o fim do bloco anterior e as fotos dos personagens. Se reprovar, o Takes gera outro take e fica com o melhor. Também confere as imagens de abertura geradas."><input type="checkbox" data-bind="p.settings.judge" data-rerender="1" ${s.judge ? "checked" : ""}> Juiz com IA depois de cada bloco</label>
+        ${s.judge ? `<label title="Quantos takes a mais o Takes gera quando o juiz reprova">Retakes se reprovar<select data-bind="p.settings.retakes" data-type="number">${[0, 1, 2, 3].map((r) => option(r, r === 0 ? "nenhum" : `até ${r}`, s.retakes)).join("")}</select></label>` : ""}
+        ${s.review || s.judge ? `<small class="muted">${state.ai.settings?.model ? `Usa o modelo ${esc(state.ai.settings.model.id)}, escolhido em Chaves de API. Cada bloco conferido é uma chamada de API com imagens.` : `Escolha um modelo em <a href="#" data-action="open-ai-keys">Chaves de API…</a>; sem modelo, os blocos seguem o plano sem conferência.`}</small>` : ""}
       </div>
       <p class="hint">Mude as configurações de vídeo antes de gerar a cena: os blocos de continuação herdam a resolução do bloco anterior.</p>
     </section>
@@ -342,10 +383,13 @@ function overview() {
       <h3>Gerar vídeos</h3>
       ${generateAllSummary(p)}
       <div class="row">
-        <button class="btn primary" data-action="generate-all" ${p.scenes.length ? "" : "disabled"}>Gerar todas as cenas</button>
+        <button class="btn primary" data-action="generate-film" ${p.scenes.length ? "" : "disabled"} title="Gera o que falta em todas as cenas, une tudo em um MP4 e escreve um relatório com o que precisa de você">Gerar o filme completo</button>
+        <button class="btn" data-action="generate-all" ${p.scenes.length ? "" : "disabled"}>Gerar todas as cenas</button>
         <button class="btn" data-action="generate-all-missing" ${p.scenes.length ? "" : "disabled"} title="Em todas as cenas, gera só os blocos que ainda não têm vídeo">Só os pendentes</button>
       </div>
+      ${filmResult(p)}
     </section>
+    ${attentionPanel(p)}
     <section class="card">
       <h3>Roteiro com LLM</h3>
       <p class="hint">Cole o roteiro completo e gere todas as cenas com uma chave de API do Claude ou da OpenAI. Ou baixe o arquivo do projeto, use outra LLM e importe o que ela devolver.</p>
@@ -439,18 +483,146 @@ function scenes() {
 function startOptions(scene) {
   const p = state.project;
   const current = `${scene.start.kind}:${scene.start.id ?? ""}`;
+  const first = p.scenes[0]?.id === scene.id;
+  const sel = ["previous", "keyframe"].includes(scene.start.kind) ? `${scene.start.kind}:` : current;
   return [
-    option("none:", "Nenhuma — o 1º bloco nasce só do texto", current),
-    ...p.backgrounds.map((b) => option(`background:${b.id}`, `Fundo: ${b.name}`, current)),
-    ...p.previews.map((x, i) => option(`preview:${x.id}`, `Prévia ${p.previews.length - i}${x.sceneId === scene.id ? " (desta cena)" : ""} · ${new Date(x.createdAt).toLocaleString("pt-BR")}`, current)),
+    option("none:", "Nenhuma — o 1º bloco nasce só do texto", sel),
+    ...(first ? [] : [option("previous:", "Último quadro da cena anterior", sel)]),
+    option("keyframe:", "Gerar imagem de abertura (Z-Image)", sel),
+    ...p.backgrounds.map((b) => option(`background:${b.id}`, `Fundo: ${b.name}`, sel)),
+    ...p.previews.map((x) => option(`preview:${x.id}`, previewLabel(x, scene), sel)),
   ].join("");
 }
 
 function startImageFile(scene) {
   const p = state.project;
+  if (scene.start.kind === "keyframe") return p.previews.find((x) => x.id === scene.start.id)?.file;
   if (scene.start.kind === "background") return p.backgrounds.find((b) => b.id === scene.start.id)?.image;
   if (scene.start.kind === "preview") return p.previews.find((x) => x.id === scene.start.id)?.file;
   return null;
+}
+
+// Imagem inicial de um bloco de corte: imagem da cena, só o texto, último quadro de um bloco
+// anterior, um fundo ou uma prévia (inclusive quadros salvos de um take).
+function previewLabel(x, scene) {
+  const p = state.project;
+  if (x.kind === "keyframe") {
+    const owner = p.scenes.find((s) => s.blocks.some((b) => b.id === x.blockId));
+    const n = owner ? owner.blocks.findIndex((b) => b.id === x.blockId) + 1 : "?";
+    return `Abertura gerada: bloco ${n}${owner && owner.id !== scene.id ? ` (${owner.title})` : ""} · ${new Date(x.createdAt).toLocaleString("pt-BR")}`;
+  }
+  if (x.fromBlock) {
+    const owner = p.scenes.find((s) => s.blocks.some((b) => b.id === x.fromBlock.blockId));
+    const n = owner ? owner.blocks.findIndex((b) => b.id === x.fromBlock.blockId) + 1 : "?";
+    return `Quadro salvo: bloco ${n} em ${Number(x.fromBlock.time).toFixed(1)} s${owner && owner.id !== scene.id ? ` (${owner.title})` : ""}`;
+  }
+  return `Prévia · ${new Date(x.createdAt).toLocaleString("pt-BR")}${x.sceneId === scene.id ? " (desta cena)" : ""}`;
+}
+
+// Resumo da continuidade de um bloco do roteiro antes de importar.
+function scriptContinuity(scene, b, i) {
+  if (i === 0) return "abre a cena";
+  if (b.continuity !== "cut") return b.continuity === "frame" ? "último quadro" : "continua";
+  const st = b.start ?? { kind: "scene" };
+  if (st.kind === "block") return `corte · do fim do bloco ${scene.blocks.findIndex((x) => x.id === st.id) + 1}`;
+  if (st.kind === "background") return `corte · fundo ${state.project.backgrounds.find((x) => x.id === st.id)?.name ?? "?"}`;
+  if (st.kind === "keyframe") return "corte · abertura gerada";
+  return st.kind === "none" ? "corte · só texto" : "corte · imagem da cena";
+}
+
+function judgeLine(take) {
+  const j = take?.judge;
+  if (!j) return "";
+  const problems = (j.problems ?? []).filter(Boolean);
+  return `<div class="judge ${j.pass ? "pass" : "fail"}" title="${esc(j.model || "")}">
+      <strong>${j.pass ? "Aprovado" : "Reprovado"} pelo juiz · ${j.score}/10</strong>${j.reason ? ` <span>${esc(j.reason)}</span>` : ""}
+      ${problems.length ? `<ul>${problems.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+    </div>`;
+}
+
+function reviewBox(scene, b) {
+  const r = b.review;
+  const when = new Date(r.at).toLocaleString("pt-BR");
+  const status = r.undone ? "Revisão desfeita" : r.changed ? "A IA ajustou este bloco" : "A IA conferiu e manteve o plano";
+  return `<div class="review ${r.changed && !r.undone ? "changed" : ""}">
+      <strong>${status}</strong> <small class="muted">${esc(r.model || "")} · ${when}</small>
+      ${r.reason ? `<div>${esc(r.reason)}</div>` : ""}
+      ${r.changed && !r.undone ? `<button class="btn small ghost" data-action="undo-review" data-scene="${scene.id}" data-id="${b.id}" title="Volta a continuidade, a imagem inicial, o prompt e a nota ao que eram antes da revisão">Desfazer</button>` : ""}
+    </div>`;
+}
+
+function cutStartOptions(scene, b, i) {
+  const p = state.project;
+  const start = b.start ?? { kind: "scene", id: null };
+  const current = start.kind === "keyframe" ? "keyframe:" : `${start.kind}:${start.id ?? ""}`;
+  return [
+    option("scene:", `Imagem inicial da cena${startImageFile(scene) ? "" : " (nenhuma: só o texto)"}`, current),
+    option("keyframe:", "Gerar imagem de abertura (Z-Image)", current),
+    option("none:", "Só o texto, sem imagem", current),
+    ...scene.blocks.slice(0, i).map((x, j) => option(`block:${x.id}`, `Último quadro do bloco ${j + 1}`, current)),
+    ...p.backgrounds.map((x) => option(`background:${x.id}`, `Fundo: ${x.name}`, current)),
+    ...p.previews.map((x) => option(`preview:${x.id}`, previewLabel(x, scene), current)),
+  ].join("");
+}
+
+// Referência de uma abertura gerada: de qual imagem o Z-Image parte.
+function refOptions(scene, ref, i, { sceneLevel = false } = {}) {
+  const p = state.project;
+  const current = `${ref?.kind ?? "scene"}:${ref?.id ?? ""}`;
+  const first = p.scenes[0]?.id === scene.id;
+  return [
+    ...(sceneLevel ? [] : [option("scene:", "Imagem inicial da cena", current)]),
+    option("none:", "Nenhuma (só o texto)", current),
+    ...(sceneLevel && !first ? [option("previous:", "Último quadro da cena anterior", current)] : []),
+    ...scene.blocks.slice(0, i).map((x, j) => option(`block:${x.id}`, `Último quadro do bloco ${j + 1}`, current)),
+    ...p.backgrounds.map((x) => option(`background:${x.id}`, `Fundo: ${x.name}`, current)),
+    ...p.previews.map((x) => option(`preview:${x.id}`, previewLabel(x, scene), current)),
+  ].join("");
+}
+
+function keyframeEditor(scene, b, i, start, { sceneLevel = false } = {}) {
+  const file = state.project.previews.find((x) => x.id === start.id)?.file;
+  return `<div class="keyframe">
+      <label class="inline">Partindo de
+        <select data-change="keyframe-ref" data-scene="${scene.id}" data-id="${b.id}" data-level="${sceneLevel ? "scene" : "block"}">${refOptions(scene, start.ref, i, { sceneLevel })}</select>
+      </label>
+      <textarea data-bind="k.${scene.id}.${b.id}.opening" rows="2" placeholder="Quadro de abertura (em inglês): enquadramento, quem está onde, o estado visível. Em branco usa o prompt.">${esc(b.opening || "")}</textarea>
+      <div class="row">
+        ${file ? `<img class="cut-thumb" src="${mediaUrl(file, file)}" alt="Abertura gerada"><button class="btn small ghost" data-action="reset-keyframe" data-scene="${scene.id}" data-id="${b.id}" title="Descarta esta imagem; a próxima geração do bloco cria outra">Gerar outra</button>` : `<span class="muted small">Gerada com o Z-Image antes do vídeo e salva nas prévias.</span>`}
+      </div>
+    </div>`;
+}
+
+function cutStartFile(scene, b) {
+  const p = state.project;
+  const start = b.start ?? { kind: "scene" };
+  if (start.kind === "keyframe") return null;
+  if (start.kind === "scene") return startImageFile(scene);
+  if (start.kind === "background") return p.backgrounds.find((x) => x.id === start.id)?.image;
+  if (start.kind === "preview") return p.previews.find((x) => x.id === start.id)?.file;
+  if (start.kind === "block") {
+    const src = scene.blocks.find((x) => x.id === start.id);
+    return src ? { block: scene.blocks.indexOf(src) + 1, ready: Boolean(src.selectedTakeId) } : null;
+  }
+  return null;
+}
+
+function cutStartPicker(scene, b, i) {
+  const file = cutStartFile(scene, b);
+  const thumb =
+    typeof file === "string"
+      ? `<img class="cut-thumb" src="${mediaUrl(file, file)}" alt="Imagem inicial do corte">`
+      : file?.block
+        ? `<span class="muted small">${file.ready ? "O quadro é extraído na hora de gerar." : `O bloco ${file.block} ainda não foi gerado.`}</span>`
+        : "";
+  const start = b.start ?? { kind: "scene" };
+  return `<div class="cut-start">
+      <label class="inline">Imagem inicial do corte
+        <select data-change="block-start" data-scene="${scene.id}" data-id="${b.id}">${cutStartOptions(scene, b, i)}</select>
+      </label>
+      ${thumb}
+    </div>
+    ${start.kind === "keyframe" ? keyframeEditor(scene, b, i, start) : ""}`;
 }
 
 function castChips(selected, bindAction, extra = "") {
@@ -546,7 +718,12 @@ function blockCard(scene, b, i, t, running) {
           }
           <label class="inline">Duração <input type="number" min="2" max="20" step="1" data-type="number" data-live="1" data-change="clamp-duration" data-bind="k.${scene.id}.${b.id}.duration" value="${b.duration}"> s</label>
         </div>
+        ${b.review ? reviewBox(scene, b) : ""}
+        ${i > 0 && b.continuity === "cut" ? cutStartPicker(scene, b, i) : ""}
+        ${i === 0 && scene.start.kind === "keyframe" ? keyframeEditor(scene, b, 0, scene.start, { sceneLevel: true }) : ""}
         <textarea data-bind="k.${scene.id}.${b.id}.prompt" rows="4" placeholder="O que acontece neste bloco (em inglês): ação, movimento, câmera, luz…">${esc(b.prompt)}</textarea>
+        <textarea class="state" data-bind="k.${scene.id}.${b.id}.state" rows="1" placeholder="Estado atual (em inglês; entra no prompt): o que mudou no lugar e nos objetos. Ex.: The gate stands wide open.">${esc(b.state || "")}</textarea>
+        <textarea class="note" data-bind="k.${scene.id}.${b.id}.note" rows="${b.note ? 2 : 1}" placeholder="Nota de continuidade (sua e da LLM; não entra no prompt). Ex.: o portão já está aberto aqui.">${esc(b.note || "")}</textarea>
         <div class="cast-row">
           <label class="check"><input type="checkbox" data-change="block-cast-custom" data-scene="${scene.id}" data-id="${b.id}" ${custom ? "checked" : ""}> Elenco próprio neste bloco</label>
           ${custom ? `<div class="chips">${castChips(b.characterIds, "toggle-block-cast", `data-block="${b.id}"`)}</div>` : `<span class="muted small">usa o elenco da cena</span>`}
@@ -554,14 +731,16 @@ function blockCard(scene, b, i, t, running) {
       </div>
       <div class="block-media">
         ${take ? `<video src="${mediaUrl(take.file, take.id)}" preload="metadata" muted controls></video>` : `<div class="placeholder">${isRunning ? (running.phase ? esc(running.phase) : "Gerando…") : "Sem vídeo"}</div>`}
+        ${judgeLine(take)}
         <div class="row">
           ${
             b.takes.length > 1
-              ? `<select data-change="select-take" data-scene="${scene.id}" data-id="${b.id}">${b.takes.map((x, n) => option(x.id, `Take ${n + 1}`, b.selectedTakeId)).join("")}</select>`
+              ? `<select data-change="select-take" data-scene="${scene.id}" data-id="${b.id}">${b.takes.map((x, n) => option(x.id, `Take ${n + 1}${x.judge ? ` · ${x.judge.score}/10${x.judge.pass ? "" : " ✗"}` : ""}`, b.selectedTakeId)).join("")}</select>`
               : ""
           }
           <button class="btn small" data-action="generate-block" data-id="${b.id}" ${running ? "disabled" : ""}>${take ? "Gerar de novo" : "Gerar"}</button>
           ${i < scene.blocks.length - 1 ? `<button class="btn small ghost" data-action="generate-from" data-index="${i}" ${running ? "disabled" : ""} title="Gera este bloco e todos os seguintes">Daqui em diante</button>` : ""}
+          ${take ? `<button class="btn small ghost" data-action="save-frame" data-scene="${scene.id}" data-id="${b.id}" title="Salva o quadro em que o vídeo está parado como imagem, para abrir um corte, a cena ou virar fundo">Salvar quadro</button>` : ""}
           ${take ? `<button class="btn small ghost" data-action="reveal" data-path="${esc(take.file)}">Finder</button>` : ""}
         </div>
       </div>
@@ -627,6 +806,10 @@ function queue() {
         <div class="row"><strong class="grow">${esc(j.title || j.kind)}</strong><span class="muted">${esc(name(j.projectId))}</span><span class="status ${j.status}">${JOB_STATUS[j.status]}</span></div>
         ${j.status === "running" ? jobLine(j) : ""}
         ${j.error ? `<pre class="error">${esc(j.error)}</pre>` : ""}
+        ${j.reviews?.length ? `<small class="muted">Revisão de continuidade: ${j.reviews.filter((r) => r.changed).length} de ${j.reviews.length} bloco(s) ajustado(s).</small>` : ""}
+        ${j.judged?.length ? `<small class="muted">Juiz: ${j.judged.filter((x) => x.pass).length} de ${j.judged.length} take(s) aprovado(s).</small>` : ""}
+        ${(j.warnings ?? []).map((w) => `<small class="warn">${esc(w)}</small>`).join("")}
+        ${j.kind === "film" && j.status === "complete" && j.result ? `<div class="row">${j.result.file ? `<button class="btn small" data-action="reveal" data-path="${esc(j.result.file)}">Mostrar o filme</button>` : ""}<button class="btn small ghost" data-action="reveal" data-path="${esc(j.result.report)}">Relatório</button><small class="muted">${esc(j.phase || "")}</small></div>` : ""}
         ${j.kind === "avatar" && j.result?.draft ? `<small>Foto pronta — abra o personagem para usar.</small>` : ""}
         <div class="row">
           ${["queued", "running"].includes(j.status) ? `<button class="btn small danger" data-action="cancel-job" data-id="${j.id}">Cancelar</button>` : `<button class="btn small ghost" data-action="remove-job" data-id="${j.id}">Remover</button>`}
@@ -670,6 +853,18 @@ function characterModal(m) {
           <button class="btn" data-action="char-upload" data-id="${c.id}">Enviar foto…</button>
           ${c.photo ? `<button class="btn" data-action="char-edit-photo" data-id="${c.id}">Editar foto</button>` : ""}
           ${c.photo ? `<button class="btn ghost danger" data-action="char-remove-photo" data-id="${c.id}">Remover foto</button>` : ""}
+        </div>
+        <div class="card inset">
+          <h4>Fichas de referência</h4>
+          <p class="hint">Frente, perfil e corpo inteiro, a partir da foto. O juiz usa para conferir se o personagem saiu parecido.</p>
+          ${(c.refs ?? []).length ? `<div class="refs">${c.refs.map((r) => `<img src="${mediaUrl(r.file, r.file)}" alt="${esc(r.view)}" title="${esc(r.view)}">`).join("")}</div>` : ""}
+          ${(() => {
+            const rj = [...state.jobs].reverse().find((j) => j.kind === "charsheet" && j.characterId === c.id);
+            const busy = rj && ["queued", "running"].includes(rj.status);
+            return `<button class="btn small" data-action="char-references" data-id="${c.id}" ${busy ? "disabled" : ""}>${busy ? "Gerando…" : (c.refs ?? []).length ? "Gerar de novo" : "Gerar fichas"}</button>
+              ${busy && rj.status === "running" ? `<div class="job-inline">${jobLine(rj)}</div>` : ""}
+              ${rj?.status === "error" ? `<small class="error">${esc(rj.error)}</small>` : ""}`;
+          })()}
         </div>
         <div class="card inset">
           <h4>Gerar foto com IA</h4>
@@ -786,6 +981,7 @@ function llmModal() {
           <button class="btn" data-action="llm-validate">Validar</button>
           <select data-change="llm-target">${option("", res && res.scenes.length > 1 ? `Adicionar como ${res.scenes.length} novas cenas` : "Adicionar como nova cena", l.target)}${p.scenes.map((s) => option(s.id, `Substituir: ${s.title}`, l.target)).join("")}</select>
           <button class="btn primary" data-action="llm-import">Importar</button>
+          <button class="btn" data-action="llm-import-film" title="Importa e já põe tudo na fila: gera as cenas, une o filme e escreve o relatório">Importar e gerar o filme</button>
         </div>
         ${l.error ? `<pre class="error">${esc(l.error)}</pre>` : ""}
         ${
@@ -793,7 +989,7 @@ function llmModal() {
             ? `<div class="card inset">${res.scenes.length > 1 ? `<p class="muted small">${res.scenes.length} cenas · ${res.scenes.reduce((n, s) => n + s.blocks.length, 0)} blocos · ${fmtTime(res.scenes.reduce((n, s) => n + sceneSeconds(s), 0))}</p>` : ""}${res.scenes
                 .map(
                   (s) => `<strong>${esc(s.title)}</strong> — ${s.blocks.length} blocos, ${fmtTime(sceneSeconds(s))}
-                  <ol class="script-preview">${s.blocks.map((b) => `<li><span class="pill">${b.duration}s · ${b.continuity}</span> ${esc(b.prompt.slice(0, 180))}${b.prompt.length > 180 ? "…" : ""}</li>`).join("")}</ol>`,
+                  <ol class="script-preview">${s.blocks.map((b, i) => `<li><span class="pill">${b.duration}s · ${scriptContinuity(s, b, i)}</span> ${esc(b.prompt.slice(0, 180))}${b.prompt.length > 180 ? "…" : ""}${b.note ? `<br><small class="muted">${esc(b.note)}</small>` : ""}</li>`).join("")}</ol>`,
                 )
                 .join("")}${res.warnings.length ? `<ul class="warn">${res.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}</div>`
             : ""
@@ -1097,6 +1293,20 @@ const actions = {
   async "generate-missing"() {
     await generate({ missing: true });
   },
+  async "generate-film"() {
+    await generateFilm();
+  },
+  "goto-block"({ scene, id }) {
+    state.sceneId = scene;
+    state.tab = "scenes";
+    render();
+    requestAnimationFrame(() => document.querySelector(`[data-range="${CSS.escape(id)}"]`)?.closest(".block")?.scrollIntoView({ block: "center" }));
+  },
+  async "char-references"({ id }) {
+    await saveNow();
+    await api("POST", `/api/projects/${state.project.id}/characters/${id}/references`);
+    toast("Fichas de referência na fila: frente, perfil e corpo inteiro.");
+  },
   async "generate-all"() {
     await generateAll({ missing: false });
   },
@@ -1135,6 +1345,28 @@ const actions = {
     const r = await api("POST", `/api/projects/${state.project.id}/scenes/${currentScene().id}/export`);
     toast(`Cena unida salva em ${r.file}`);
     await api("POST", "/api/reveal", { path: r.file });
+  },
+  async "reset-keyframe"({ scene, id }) {
+    await saveNow();
+    state.project = await api("POST", `/api/projects/${state.project.id}/scenes/${scene}/blocks/${id}/keyframe/reset`);
+    render();
+    toast("A próxima geração deste bloco cria uma nova imagem de abertura.");
+  },
+  async "undo-review"({ scene, id }) {
+    await saveNow();
+    state.project = await api("POST", `/api/projects/${state.project.id}/scenes/${scene}/blocks/${id}/review/undo`);
+    render();
+    toast("O bloco voltou ao plano anterior à revisão.");
+  },
+  async "save-frame"({ scene: sceneId, id }, el) {
+    const video = el.closest(".block-media")?.querySelector("video");
+    const s = state.project.scenes.find((x) => x.id === sceneId);
+    const b = s?.blocks.find((x) => x.id === id);
+    if (!video || !b) return;
+    await saveNow();
+    const r = await api("POST", `/api/projects/${state.project.id}/scenes/${sceneId}/blocks/${id}/frame`, { time: video.currentTime, takeId: b.selectedTakeId });
+    absorb(r.project);
+    toast(`Quadro de ${video.currentTime.toFixed(1)} s salvo nas prévias. Escolha-o em "Imagem inicial do corte" de um bloco ou como imagem inicial da cena.`);
   },
   "preview-for-scene"() {
     const s = currentScene();
@@ -1221,7 +1453,10 @@ const actions = {
     }
     render();
   },
-  async "llm-import"() {
+  async "llm-import-film"() {
+    await actions["llm-import"]({ film: true });
+  },
+  async "llm-import"({ film = false } = {}) {
     await saveNow();
     try {
       const r = await api("POST", `/api/projects/${state.project.id}/import-script`, { text: state.llm.script, replaceSceneId: state.llm.target || null });
@@ -1234,6 +1469,7 @@ const actions = {
       await loadProjects();
       render();
       toast(r.warnings.length ? `Roteiro importado com ${r.warnings.length} aviso(s).` : "Roteiro importado.");
+      if (film === true) await generateFilm();
     } catch (e) {
       state.llm.error = e.message;
       render();
@@ -1263,10 +1499,33 @@ const changes = {
     scheduleSave(0);
     render();
   },
+  "keyframe-ref"(el) {
+    const s = state.project.scenes.find((x) => x.id === el.dataset.scene);
+    const b = s?.blocks.find((x) => x.id === el.dataset.id);
+    if (!b) return;
+    const [kind, id] = el.value.split(":");
+    const ref = { kind, id: id || null };
+    if (el.dataset.level === "scene") s.start = { kind: "keyframe", id: null, ref };
+    else b.start = { kind: "keyframe", id: null, ref };
+    scheduleSave(0);
+    render();
+  },
   "scene-start"(el) {
     const s = currentScene();
     const [kind, id] = el.value.split(":");
-    s.start = { kind, id: id || null };
+    s.start =
+      kind === "keyframe"
+        ? { kind, id: null, ref: s.backgroundId ? { kind: "background", id: s.backgroundId } : { kind: "none", id: null } }
+        : { kind, id: id || null };
+    scheduleSave(0);
+    render();
+  },
+  "block-start"(el) {
+    const s = state.project.scenes.find((x) => x.id === el.dataset.scene);
+    const b = s?.blocks.find((x) => x.id === el.dataset.id);
+    if (!b) return;
+    const [kind, id] = el.value.split(":");
+    b.start = kind === "keyframe" ? { kind, id: null, ref: b.start?.kind === "keyframe" ? b.start.ref : { kind: "scene", id: null } } : { kind, id: id || null };
     scheduleSave(0);
     render();
   },
@@ -1325,6 +1584,19 @@ async function generate(opts) {
   }
   await api("POST", `/api/projects/${state.project.id}/scenes/${scene.id}/generate`, opts);
   toast("Na fila de geração.");
+}
+
+async function generateFilm() {
+  await saveNow();
+  const p = state.project;
+  if (!p.outputDir) {
+    actions.tab({ tab: "overview" });
+    return toast("Escolha a pasta de saída do projeto antes de gerar.", "error");
+  }
+  const r = await api("POST", `/api/projects/${p.id}/film`, { missing: true });
+  actions.tab({ tab: "queue" });
+  const skipped = r.skipped.length ? ` ${r.skipped.length} cena(s) sem nada pendente.` : "";
+  toast(`${r.added.length} cena(s) na fila; no fim o Takes une o filme e escreve o relatório.${skipped}`);
 }
 
 async function generateAll({ missing }) {
@@ -1504,6 +1776,9 @@ async function pollLtx() {
   if (last && state.projects.some((p) => p.id === last)) await openProject(last);
   else render();
   connectEvents();
+  api("GET", "/api/ai")
+    .then((settings) => ((state.ai.settings = settings), render()))
+    .catch(() => {});
   pollLtx();
   setInterval(pollLtx, 15000);
 })();

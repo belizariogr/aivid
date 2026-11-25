@@ -210,7 +210,7 @@ export class LtxClient {
   async generateImage(body, opts = {}) {
     const status = await this.request("GET", "/api/image-generation/status");
     if (status.localBlocker || status.defaultProvider !== "local")
-      throw new LtxError("A geração local de imagens não está disponível. Instale o Z-Image Turbo no LTX Desktop.");
+      throw new LtxError("A geração local de imagens não está disponível. Instale o Z-Image Turbo no LTX Desktop.", { code: "NO_IMAGE_MODEL" });
     return this.long("/api/generate-image", body, opts, (r) => ({ status: "complete", image_paths: Array.isArray(r) ? r : [r] }));
   }
 

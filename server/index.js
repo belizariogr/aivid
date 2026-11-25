@@ -9,9 +9,10 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Store, findScene, selectedTake, blockState, slug, newId, normalizeCharacter } from "./store.js";
 import { LtxClient } from "./ltx.js";
-import { JobQueue, sceneFolder } from "./jobs.js";
+import { JobQueue, sceneFolder, attention } from "./jobs.js";
 import { buildBrief, userPrompt, parseScript } from "./llm.js";
 import { AiSettings, ScriptWriter } from "./ai.js";
+import { ContinuityReviewer } from "./review.js";
 import * as media from "./media.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -24,15 +25,16 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const res of clients) res.write(payload);
   };
+  const aiSettings = new AiSettings(path.join(root, "ai.json"));
+  const writer = new ScriptWriter({ settings: aiSettings, store, fetchImpl, onChange: (task) => broadcast("ai", task) });
   const queue = new JobQueue({
     store,
     ltx,
     mediaLib,
     file: path.join(root, "jobs.json"),
     onChange: (jobs) => broadcast("jobs", jobs),
+    reviewer: new ContinuityReviewer({ settings: aiSettings, writer, media: mediaLib, fetchImpl }),
   });
-  const aiSettings = new AiSettings(path.join(root, "ai.json"));
-  const writer = new ScriptWriter({ settings: aiSettings, store, fetchImpl, onChange: (task) => broadcast("ai", task) });
   let onShutdown = () => {};
   const originalSave = store.save.bind(store);
   store.save = (project) => {
@@ -50,8 +52,9 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
 
   function view(project) {
     const p = structuredClone(project);
-    for (const scene of p.scenes) scene.blocks.forEach((b, i) => (b.state = blockState(project.scenes.find((s) => s.id === scene.id), i)));
+    for (const scene of p.scenes) scene.blocks.forEach((b, i) => (b.state = blockState(project.scenes.find((s) => s.id === scene.id), i, project)));
     p.summary = { sceneCount: p.scenes.length };
+    p.attention = attention(project);
     return p;
   }
 
@@ -141,6 +144,10 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
         for (const s of p.scenes) {
           if (s.backgroundId === bid) s.backgroundId = null;
           if (s.start.kind === "background" && s.start.id === bid) s.start = { kind: "none", id: null };
+          for (const b of s.blocks) {
+            if (b.start?.kind === "background" && b.start.id === bid) b.start = { kind: "scene", id: null };
+            if (b.start?.kind === "keyframe" && b.start.ref?.kind === "background" && b.start.ref.id === bid) b.start = { ...b.start, ref: { kind: "scene", id: null } };
+          }
         }
       }),
     ),
@@ -164,7 +171,15 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
     view(
       store.update(id, (p) => {
         p.previews = p.previews.filter((x) => x.id !== pid);
-        for (const s of p.scenes) if (s.start.kind === "preview" && s.start.id === pid) s.start = { kind: "none", id: null };
+        for (const s of p.scenes) {
+          if (s.start.kind === "preview" && s.start.id === pid) s.start = { kind: "none", id: null };
+          if (s.start.kind === "keyframe" && s.start.id === pid) s.start = { ...s.start, id: null };
+          for (const b of s.blocks) {
+            if (b.start?.kind === "preview" && b.start.id === pid) b.start = { kind: "scene", id: null };
+            if (b.start?.kind === "keyframe" && b.start.id === pid) b.start = { ...b.start, id: null };
+            if (b.start?.kind === "keyframe" && b.start.ref?.kind === "preview" && b.start.ref.id === pid) b.start = { ...b.start, ref: { kind: "scene", id: null } };
+          }
+        }
       }),
     ),
   );
@@ -178,9 +193,68 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
     return view(store.update(id, (p) => void p.backgrounds.push({ id: bid, name: String(body.name || "Fundo da prévia").slice(0, 200), description: String(body.description || ""), image: file })));
   });
 
+  // Salva um quadro de um take (no instante escolhido no player) como prévia, para servir de imagem
+  // inicial de um corte, de imagem inicial da cena ou de base para um fundo.
+  route("POST", "/api/projects/:id/scenes/:sid/blocks/:kid/frame", async ({ id, sid, kid, body }) => {
+    const project = store.get(id);
+    const scene = findScene(project, sid);
+    const index = scene.blocks.findIndex((b) => b.id === kid);
+    const block = scene.blocks[index];
+    const take = block?.takes.find((t) => t.id === body.takeId) ?? selectedTake(block);
+    if (!take || !fs.existsSync(take.file)) throw Object.assign(new Error("Este bloco não tem vídeo."), { status: 404 });
+    if (!project.outputDir) throw Object.assign(new Error("Escolha a pasta de saída do projeto."), { status: 400 });
+    const time = Math.max(0, Number(body.time) || 0);
+    const dir = path.join(project.outputDir, "previas");
+    await fsp.mkdir(dir, { recursive: true });
+    const name = `${slug(scene.title, "cena")}-bloco-${String(index + 1).padStart(2, "0")}-${time.toFixed(2).replace(".", "s")}-${Date.now().toString(36)}.png`;
+    const file = path.join(dir, name);
+    const info = await mediaLib.probe(take.file);
+    // Perto do fim, -ss pode passar do último quadro e não gerar nada.
+    const last = time >= info.duration - 1.5 / info.fps;
+    await mediaLib.extractFrame(take.file, file, last ? { which: "last" } : { which: "at", time });
+    if (!fs.existsSync(file)) throw new Error("Não foi possível extrair o quadro.");
+    const preview = {
+      id: newId(),
+      sceneId: sid,
+      backgroundId: null,
+      prompt: `Quadro do bloco ${index + 1} em ${time.toFixed(2)} s.`,
+      file,
+      createdAt: new Date().toISOString(),
+      fromBlock: { blockId: kid, takeId: take.id, time },
+    };
+    const updated = store.update(id, (p) => void p.previews.unshift(preview));
+    return { project: view(updated), previewId: preview.id };
+  });
+
+  // Descarta a imagem de abertura gerada de um bloco; a próxima geração do bloco cria outra.
+  route("POST", "/api/projects/:id/scenes/:sid/blocks/:kid/keyframe/reset", ({ id, sid, kid }) =>
+    view(
+      store.update(id, (p) => {
+        const scene = findScene(p, sid);
+        const index = scene.blocks.findIndex((b) => b.id === kid);
+        if (index === 0 && scene.start.kind === "keyframe") scene.start = { ...scene.start, id: null };
+        else if (scene.blocks[index]?.start?.kind === "keyframe") scene.blocks[index].start = { ...scene.blocks[index].start, id: null };
+      }),
+    ),
+  );
+
+  // Volta o bloco ao que era antes da revisão de continuidade com IA.
+  route("POST", "/api/projects/:id/scenes/:sid/blocks/:kid/review/undo", ({ id, sid, kid }) => {
+    const updated = store.update(id, (p) => {
+      const block = findScene(p, sid).blocks.find((b) => b.id === kid);
+      if (!block?.review?.before || block.review.undone) throw Object.assign(new Error("Não há revisão para desfazer neste bloco."), { status: 409 });
+      Object.assign(block, block.review.before);
+      block.review = { ...block.review, undone: true, at: new Date().toISOString() };
+    });
+    return view(updated);
+  });
+
   route("POST", "/api/projects/:id/scenes/:sid/generate", ({ id, sid, body }) =>
     queue.addScene(id, sid, { from: Number(body.from) || 0, only: body.only || null, missing: Boolean(body.missing) }),
   );
+  // Do roteiro ao filme: gera o que falta em todas as cenas, une tudo e escreve o relatório.
+  route("POST", "/api/projects/:id/film", ({ id, body }) => queue.addFilm(id, { missing: body.missing !== false }));
+  route("POST", "/api/projects/:id/characters/:cid/references", ({ id, cid }) => queue.addCharsheet(id, cid));
   route("POST", "/api/projects/:id/generate-all", ({ id, body }) => queue.addAllScenes(id, { missing: Boolean(body.missing) }));
   route("GET", "/api/projects/:id/scenes/:sid/playlist", ({ id, sid }) => {
     const project = store.get(id);
@@ -188,7 +262,7 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
     let t = 0;
     return scene.blocks.map((b, i) => {
       const take = selectedTake(b);
-      const item = { blockId: b.id, index: i, start: t, duration: b.duration, state: blockState(scene, i), continuity: i === 0 ? "start" : b.continuity, prompt: b.prompt, file: take?.file ?? null };
+      const item = { blockId: b.id, index: i, start: t, duration: b.duration, state: blockState(scene, i, project), continuity: i === 0 ? "start" : b.continuity, prompt: b.prompt, file: take?.file ?? null };
       t += b.duration;
       return item;
     });
