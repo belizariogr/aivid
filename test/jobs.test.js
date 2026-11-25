@@ -249,20 +249,83 @@ test("preview images are saved in the output folder", { skip: !ffmpeg && "ffmpeg
   assert.match(req.prompt, /Noir[\s\S]*no people[\s\S]*dark alley/);
 });
 
-test("waits while the LTX is busy with another generation", { skip: !ffmpeg && "ffmpeg ausente" }, async () => {
+test("a generation that is not from Takes is cancelled, and the LTX is restarted if it does not stop", { skip: !ffmpeg && "ffmpeg ausente" }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(root);
+  // Uma geração estranha presa em 83%: o cancelamento não adianta; só reiniciar resolve.
+  let foreign = true;
+  let cancels = 0;
+  let restarts = 0;
+  const progress = ltx.progress.bind(ltx);
+  ltx.progress = async () => (foreign ? { status: "running", progress: 83, id: "estranha" } : progress());
+  ltx.cancel = async () => void cancels++;
+  ltx.restartApp = async ({ onPhase }) => {
+    restarts++;
+    onPhase("Abrindo o LTX Desktop de novo…");
+    foreign = false;
+  };
+  const phases = [];
+  const queue = new JobQueue({ store, ltx, onChange: (jobs) => phases.push(jobs[0]?.phase) });
+  queue.idlePoll = 10;
+  queue.foreignGraceMs = 50;
+  const p = store.create("X");
+  store.edit(p.id, { outputDir: path.join(root, "out"), scenes: [{ id: "s", blocks: [{ id: "a", prompt: "a", duration: 2 }] }] });
+  queue.addScene(p.id, "s");
+  await waitIdle(queue);
+  const job = queue.jobs[0];
+  assert.equal(job.status, "complete", job.error);
+  assert.equal(cancels, 1);
+  assert.equal(restarts, 1);
+  assert.ok(phases.some((x) => /não é do Takes/.test(x || "")));
+  assert.match(job.warnings.join(" "), /foi cancelada/);
+  assert.match(job.warnings.join(" "), /LTX Desktop foi reiniciado/);
+});
+
+test("a cancelled foreign generation that stops needs no restart", { skip: !ffmpeg && "ffmpeg ausente" }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
   const store = new Store(path.join(root, "lib"));
   const ltx = new FakeLtx(root);
   ltx.busy = 2;
-  const phases = [];
-  const queue = new JobQueue({ store, ltx, onChange: (jobs) => phases.push(jobs[0]?.phase) });
+  let restarts = 0;
+  ltx.restartApp = async () => void restarts++;
+  const queue = new JobQueue({ store, ltx });
   queue.idlePoll = 10;
   const p = store.create("X");
   store.edit(p.id, { outputDir: path.join(root, "out"), scenes: [{ id: "s", blocks: [{ id: "a", prompt: "a", duration: 2 }] }] });
   queue.addScene(p.id, "s");
   await waitIdle(queue);
   assert.equal(queue.jobs[0].status, "complete", queue.jobs[0].error);
-  assert.ok(phases.some((x) => /Aguardando o LTX/.test(x || "")));
+  assert.equal(restarts, 0);
+});
+
+test("a generation that stops advancing is cancelled and made again", { skip: !ffmpeg && "ffmpeg ausente", timeout: 30_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(root);
+  // 1ª geração: fica em 40% até ser cancelada. 2ª: termina normalmente.
+  let generating = false;
+  let hang = true;
+  ltx.progress = async () => (generating ? { status: "running", progress: 40, id: "g1", phase: "inference" } : { status: "idle", id: "g0" });
+  const generate = ltx.generateVideo.bind(ltx);
+  ltx.generateVideo = async (req) => {
+    if (!hang) return generate(req);
+    generating = true;
+    await new Promise((resolve) => (ltx.cancel = async () => ((generating = false), (hang = false), resolve())));
+    return { status: "cancelled" };
+  };
+  ltx.restartApp = async () => {};
+  const queue = new JobQueue({ store, ltx });
+  queue.pollMs = 10;
+  queue.stallMs = 80;
+  queue.retryDelays = [0, 0];
+  const p = store.create("X");
+  store.edit(p.id, { outputDir: path.join(root, "out"), scenes: [{ id: "s", blocks: [{ id: "a", prompt: "a", duration: 2 }] }] });
+  queue.addScene(p.id, "s");
+  await waitIdle(queue);
+  const job = queue.jobs[0];
+  assert.equal(job.status, "complete", job.error);
+  assert.equal(store.get(p.id).scenes[0].blocks[0].takes.length, 1);
 });
 
 // LTX cujo estado de progresso é compartilhado entre "aberturas" do Takes.

@@ -218,6 +218,49 @@ export class LtxClient {
     return this.request("GET", "/api/generation/progress", undefined, { timeout: 10_000 });
   }
 
+  // Fecha o LTX Desktop (à força se ele não sair), abre de novo e espera o backend responder.
+  // Usado quando o LTX trava numa geração ou para de responder: ele só gera para o Takes.
+  async restartApp({ signal, onPhase = () => {} } = {}) {
+    const app = "/Applications/LTX Desktop.app";
+    const running = async () => {
+      try {
+        const { stdout } = await this.exec("/usr/bin/pgrep", ["-f", "LTX Desktop.app/Contents/MacOS/LTX Desktop"]);
+        return stdout.trim().length > 0;
+      } catch {
+        return false;
+      }
+    };
+    onPhase("Fechando o LTX Desktop…");
+    this.connection = null;
+    await this.exec("/usr/bin/osascript", ["-e", 'tell application id "com.lightricks.ltx-desktop" to quit']).catch(() => {});
+    for (let i = 0; i < 40 && (await running()); i++) await sleep(500, signal);
+    if (await running()) {
+      await this.exec("/usr/bin/pkill", ["-TERM", "-f", "LTX Desktop.app/Contents"]).catch(() => {});
+      for (let i = 0; i < 20 && (await running()); i++) await sleep(500, signal);
+      await this.exec("/usr/bin/pkill", ["-KILL", "-f", "LTX Desktop.app/Contents"]).catch(() => {});
+      await sleep(2000, signal);
+    }
+    onPhase("Abrindo o LTX Desktop de novo…");
+    await this.exec("/usr/bin/open", ["-g", app]).catch(() => this.exec("/usr/bin/open", ["-g", "-b", "com.lightricks.ltx-desktop"]));
+    const deadline = Date.now() + 10 * 60_000;
+    while (Date.now() < deadline) {
+      await sleep(3000, signal);
+      try {
+        this.connection = null;
+        await this.discover();
+        await this.request("GET", "/api/models/ltx-versions", undefined, { timeout: 10_000 });
+        const p = await this.progress();
+        if (p.status !== "running") {
+          onPhase("LTX Desktop reaberto.");
+          return;
+        }
+      } catch {
+        /* ainda iniciando */
+      }
+    }
+    throw new LtxError("O LTX Desktop não voltou depois de reiniciado. Abra o LTX e use Retomar.", { code: "NOT_RUNNING" });
+  }
+
   cancel() {
     return this.request("POST", "/api/generate/cancel", {}, { timeout: 10_000 });
   }

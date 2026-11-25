@@ -144,6 +144,14 @@ export class JobQueue {
     this.pollMs = 1500;
     // Consultas seguidas sem resposta do LTX antes de dar uma geração recuperada como perdida.
     this.recoverTolerance = 40;
+    // Guarda do LTX: o LTX só gera para o Takes. Uma geração que não é nossa é cancelada; se ele
+    // não obedecer em `foreignGraceMs`, ou ficar `unresponsiveLimit` consultas sem responder, ou
+    // uma geração nossa ficar `stallMs` sem avançar, o LTX Desktop é reiniciado.
+    this.foreignGraceMs = 60_000;
+    this.unresponsiveLimit = 20;
+    this.stallMs = 12 * 60_000;
+    this.maxRestarts = 3;
+    this.ltxRestart = null;
     this.idlePoll = 3000;
     // Pausa antes de cada nova tentativa de um bloco que falhou; o tamanho da lista é o número de novas tentativas.
     this.retryDelays = [5000, 15000];
@@ -357,46 +365,126 @@ export class JobQueue {
   }
 
   // O LTX gera uma coisa por vez: se estiver ocupado (pelo próprio LTX ou por outro app), espera.
+  // Antes de cada geração: o LTX precisa estar livre. Como só o Takes gera nele, o que estiver
+  // rodando é uma geração presa ou perdida: cancela e, se não parar, reinicia o LTX Desktop.
+  // Se o LTX estiver fechado ou sem responder, abre (ou reinicia) também.
   async waitForLtx(job) {
+    let cancelledAt = null;
+    let misses = 0;
     for (;;) {
       if (job.cancelRequested) throw Object.assign(new Error("Operação cancelada."), { code: "ABORTED" });
-      const p = await this.ltx.progress();
-      if (p.status !== "running") return;
-      const phase = `Aguardando o LTX terminar outra geração${p.progress ? ` (${p.progress}%)` : ""}`;
-      if (job.phase !== phase) {
-        job.phase = phase;
-        this.changed();
+      if (this.ltxRestart) await this.ltxRestart.catch(() => {});
+      let p;
+      try {
+        p = await this.ltx.progress();
+        misses = 0;
+      } catch (error) {
+        if (error.code === "ABORTED") throw error;
+        misses++;
+        if (error.code === "NOT_RUNNING") await this.restartLtx(job, "O LTX Desktop estava fechado");
+        else if (misses >= this.unresponsiveLimit) {
+          await this.restartLtx(job, "O LTX parou de responder");
+          misses = 0;
+        } else await this.pause(job, this.idlePoll);
+        continue;
       }
-      await new Promise((r) => setTimeout(r, this.idlePoll));
+      if (p.status !== "running") return;
+      if (!cancelledAt) {
+        job.phase = `O LTX está gerando algo que não é do Takes${p.progress ? ` (${p.progress}%)` : ""}. Cancelando…`;
+        this.changed();
+        await this.ltx.cancel().catch(() => {});
+        cancelledAt = Date.now();
+        (job.warnings ??= []).push(`O LTX estava ocupado com uma geração que não era do Takes${p.progress ? ` (parada em ${p.progress}%)` : ""}; ela foi cancelada.`);
+      } else if (Date.now() - cancelledAt > this.foreignGraceMs) {
+        await this.restartLtx(job, "O LTX não parou a geração que não era do Takes");
+        cancelledAt = null;
+        continue;
+      }
+      await this.pause(job, this.idlePoll);
     }
+  }
+
+  // Reinicia o LTX Desktop uma vez por vez (outras chamadas esperam a mesma reinicialização).
+  restartLtx(job, reason) {
+    if (this.ltxRestart) return this.ltxRestart;
+    job.ltxRestarts = (job.ltxRestarts ?? 0) + 1;
+    if (job.ltxRestarts > this.maxRestarts)
+      return Promise.reject(fatal(`${reason}, e o LTX Desktop já foi reiniciado ${this.maxRestarts} vezes nesta tarefa. Confira o LTX e use Retomar.`));
+    (job.warnings ??= []).push(`${reason}: o LTX Desktop foi reiniciado (${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}).`);
+    job.phase = `${reason}. Reiniciando o LTX Desktop…`;
+    this.changed();
+    this.ltxRestart = this.ltx
+      .restartApp({ signal: job.abort?.signal, onPhase: (text) => ((job.phase = text), this.changed()) })
+      .finally(() => (this.ltxRestart = null));
+    return this.ltxRestart;
   }
 
   // Chama o LTX acompanhando o progresso. `inflight` descreve como salvar o resultado e fica
   // gravado até o resultado ser salvo, para a geração sobreviver a um fechamento do Takes.
   async withLtx(job, label, inflight, call) {
-    await this.ltx.ensureLocal();
     await this.waitForLtx(job);
+    await this.ltx.ensureLocal();
     job.phase = label;
     job.ltxBefore = (await this.ltx.progress().catch(() => ({}))).id ?? null;
     job.ltxGenerationId = null;
     job.inflight = { label, ...inflight };
     job.ltxActive = true;
     this.changed();
+    // Vigia: uma geração que não avança por `stallMs` (ou um LTX que não responde) é cancelada e,
+    // se preciso, o LTX é reiniciado; o bloco é gerado de novo pelas novas tentativas.
+    let lastSign = null;
+    let lastChange = Date.now();
+    let misses = 0;
+    let stalled = null;
+    let stalledAt = 0;
+    let polling = false;
+    const stall = async (reason) => {
+      stalled = reason;
+      stalledAt = Date.now();
+      job.phase = `${reason}. Cancelando…`;
+      this.changed();
+      await this.ltx.cancel().catch(() => {});
+    };
     const timer = setInterval(async () => {
+      if (polling || this.ltxRestart) return;
+      polling = true;
       try {
         const p = await this.ltx.progress();
+        misses = 0;
+        const sign = `${p.id}|${p.status}|${p.progress}|${p.phase}|${p.currentStep}`;
+        if (sign !== lastSign) {
+          lastSign = sign;
+          lastChange = Date.now();
+        }
         if (p.status === "running" && job.status === "running" && !job.cancelRequested) {
           if (p.id && p.id !== job.ltxBefore) job.ltxGenerationId = p.id;
           job.stepProgress = p.progress;
           job.remainingSeconds = p.remainingSeconds ?? null;
-          this.changed();
+          if (!stalled && Date.now() - lastChange > this.stallMs) await stall(`O LTX travou em ${p.progress ?? 0}% (${Math.round(this.stallMs / 60_000)} min sem avançar)`);
+          else if (stalled && Date.now() - stalledAt > this.foreignGraceMs) this.restartLtx(job, `${stalled} e não parou`).catch(() => {});
+          else this.changed();
         }
       } catch {
-        /* a chamada principal reporta a falha */
+        // A chamada principal reporta falhas da geração; aqui só conta o LTX sem responder.
+        if (++misses >= this.unresponsiveLimit && !stalled) {
+          stalled = "O LTX parou de responder durante a geração";
+          stalledAt = Date.now();
+          this.restartLtx(job, stalled).catch(() => {});
+        }
+      } finally {
+        polling = false;
       }
     }, this.pollMs);
+    const retry = () => Object.assign(new Error(`${stalled}; o bloco vai ser gerado de novo.`), { code: "LTX_STALLED" });
     try {
-      const result = await call();
+      let result;
+      try {
+        result = await call();
+      } catch (error) {
+        if (stalled && !job.cancelRequested) throw retry();
+        throw error;
+      }
+      if (stalled && !job.cancelRequested) throw retry();
       if (result?.status === "cancelled") job.cancelRequested = true;
       return result;
     } finally {
