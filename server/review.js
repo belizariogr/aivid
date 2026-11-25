@@ -52,6 +52,21 @@ Pass the image when it shows the planned framing and the place in the current "s
 Reply with ONLY a JSON object, no text before or after it:
 {"pass": true or false, "problems": ["each problem in Brazilian Portuguese"], "reason": "one sentence in Brazilian Portuguese"}`;
 
+const REVISE_SYSTEM = `You fix a block of a video made with LTX, a local text/image-to-video model, inside the Takes app. The quality judge just rejected a take of this block. LTX will render the block again. You see the judge's verdict, frames of the rejected take (first, middle, last), the last frame of the previous block, the opening image that was used and reference photos of the characters.
+
+Find why the take failed and change what will make the next take pass:
+- If the action did not happen or came out wrong, rewrite the prompt so the action is simple, explicit and in chronological order; describe one main action per block; name who does what, where and how the camera frames it.
+- If the place or an object is in the wrong state, fix "state" and say it in the prompt too.
+- If the opening image was wrong (wrong state, wrong framing, wrong characters), change the opening: for a "cut", a different "start" or a better "opening" description, or set "regenerateOpening" to true to generate the opening image again.
+- If the take looks like plain bad luck of the generation (a glitch, a deformed hand) and the plan is right, keep everything ("decision": "keep"); the next take uses a different seed.
+
+Keep the block's story, dialogue, duration and characters. ${STYLE}
+
+${CONTINUITY_RULES}
+
+Reply with ONLY a JSON object, no text before or after it:
+{"decision": "keep" or "change", "continuity": "continue" | "frame" | "cut", "start": "keyframe" | "block:N" | "scene" | "background:<id>" | "none" (only when "continuity" is "cut"), "reference": "scene" | "block:N" | "background:<id>" | "none" (only with "keyframe"), "opening": "English description of the first frame (only with keyframe)", "regenerateOpening": true or false, "state": "current state in English, or empty", "prompt": "the full prompt for the next take", "note": "continuity note for the editor, in Brazilian Portuguese", "reason": "one or two sentences in Brazilian Portuguese: what went wrong and what you changed"}`;
+
 const fail = (message) => Object.assign(new Error(message), { status: 422 });
 
 function refLabel(scene, ref) {
@@ -220,6 +235,46 @@ export class ContinuityReviewer {
   async review({ project, scene, index, work, startImage = null, signal }) {
     const parts = await this.request(project, scene, index, work, { startImage, signal });
     return this.askJson(REVIEW_SYSTEM, parts, (data) => this.parse(project, scene, index, data), signal);
+  }
+
+  // ---------- depois de um take reprovado ----------
+
+  // Ajusta o bloco antes do retake, a partir do que o juiz apontou. Devolve o mesmo formato da
+  // revisão, mais `regenerateOpening` (gerar de novo a imagem de abertura).
+  async revise({ project, scene, index, take, verdict, work, signal }) {
+    const block = scene.blocks[index];
+    const info = await this.media.probe(take.file);
+    const m = this.parts(work, signal);
+    m.text(
+      [
+        this.projectText(project, scene),
+        `Plan of the scene (the block to fix is block ${index + 1}, marked "next"):`,
+        JSON.stringify(this.plan(scene, index), null, 2),
+        `The judge rejected the take of block ${index + 1} with score ${verdict.score}/10. Reason: ${verdict.reason || "(none)"}`,
+        `Problems: ${(verdict.problems ?? []).join(" | ") || "(none listed)"}`,
+      ].join("\n"),
+    );
+    const prev = index > 0 ? selectedTake(scene.blocks[index - 1]) : null;
+    if (prev) await m.image(`Last frame of the previous block (${index}):`, prev.file, { last: true });
+    if (take.startImage) await m.image("Opening image used for the rejected take:", take.startImage);
+    await m.image("Rejected take, first frame:", take.file, { time: 0 });
+    await m.image("Rejected take, middle frame:", take.file, { time: info.duration / 2 });
+    await m.image("Rejected take, last frame:", take.file, { last: true });
+    await this.characterImages(m, project, scene, block);
+    m.text(`Fix block ${index + 1} for the next take now and reply with the JSON.`);
+    return this.askJson(
+      REVISE_SYSTEM,
+      m.parts,
+      (data) => {
+        // O 1º bloco abre a cena: a ligação e a abertura dele são da cena.
+        const fixed = index === 0 ? { ...data, continuity: block.continuity, start: null } : data;
+        const r = this.parse(project, scene, index, fixed);
+        const keyframe = index === 0 ? scene.start?.kind === "keyframe" : r.block.start?.kind === "keyframe";
+        const regenerateOpening = Boolean(data.regenerateOpening) && keyframe;
+        return { ...r, regenerateOpening, changed: r.changed || regenerateOpening };
+      },
+      signal,
+    );
   }
 
   // ---------- depois do bloco ----------

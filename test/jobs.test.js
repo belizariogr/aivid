@@ -600,3 +600,44 @@ test("a generated opening whose reference is gone is made from text only", { ski
   assert.equal(ltx.calls[0][1].imagePath, undefined);
   assert.match(job.warnings[0], /referência da imagem de abertura não está disponível/);
 });
+
+test("before a retake the AI adjusts the block from what the judge pointed out", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  const revisions = [];
+  const reviewer = {
+    async judge({ scene, index }) {
+      const prompt = scene.blocks[index].prompt;
+      const pass = prompt.includes("clearly");
+      return { pass, score: pass ? 8 : 3, problems: pass ? [] : ["O portão não abriu."], reason: pass ? "ok" : "ação não aconteceu", model: "Fake" };
+    },
+    async revise({ scene, index, verdict }) {
+      revisions.push({ index, problems: verdict.problems, prompt: scene.blocks[index].prompt });
+      const block = scene.blocks[index];
+      return { changed: true, regenerateOpening: true, block: { continuity: block.continuity, start: block.start, prompt: "Teca clearly pushes the gate open with both paws.", note: "Ação simplificada.", currentState: "The gate stands open.", opening: block.opening || "" }, reason: "A ação estava ambígua.", model: "Fake" };
+    },
+  };
+  const queue = new JobQueue({ store, ltx, reviewer });
+  const p = store.create("Retake");
+  store.edit(p.id, {
+    outputDir: path.join(root, "out"),
+    settings: { judge: true, retakes: 2 },
+    scenes: [{ id: "s", title: "Cena", start: { kind: "keyframe", ref: { kind: "none" } }, blocks: [{ id: "a", prompt: "Teca and the gate.", opening: "wide", duration: 2 }] }],
+  });
+  queue.addScene(p.id, "s");
+  await waitIdle(queue);
+  const job = queue.jobs[0];
+  assert.equal(job.status, "complete", job.error);
+  assert.deepEqual(revisions, [{ index: 0, problems: ["O portão não abriu."], prompt: "Teca and the gate." }]);
+  // 1º take reprovado → ajuste → nova abertura → 2º take aprovado, com o prompt novo.
+  assert.deepEqual(ltx.calls.map((c) => c[0]), ["image", "generate", "image", "generate"]);
+  assert.match(ltx.calls[3][1].prompt, /clearly pushes the gate/);
+  assert.match(ltx.calls[3][1].prompt, /Current state: The gate stands open\./);
+  const block = store.get(p.id).scenes[0].blocks[0];
+  assert.equal(block.takes.length, 2);
+  assert.equal(selectedTake(block).judge.pass, true);
+  assert.equal(block.review.kind, "retake");
+  assert.equal(block.review.before.prompt, "Teca and the gate.");
+  assert.deepEqual(job.reviews.map((r) => r.retake), [1]);
+});

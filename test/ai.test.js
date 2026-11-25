@@ -298,3 +298,35 @@ test("the stream reports that the model received the script and is thinking", as
     ["writing", null, "{}"],
   ]);
 });
+
+test("the reviser gets the judge's problems and the rejected frames", async () => {
+  const { ContinuityReviewer } = await import("../server/review.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "takes-revise-"));
+  const file = (name) => (fs.writeFileSync(path.join(dir, name), "x"), path.join(dir, name));
+  const project = { prePrompt: "", characters: [], backgrounds: [] };
+  const scene = {
+    title: "Portão",
+    characterIds: [],
+    start: { kind: "keyframe", id: "k", ref: { kind: "none", id: null } },
+    blocks: [{ id: "a", prompt: "Teca and the gate", opening: "wide", duration: 6, continuity: "cut", takes: [{ id: "t1", file: file("t1.mp4"), startImage: file("open.png") }], selectedTakeId: "t1" }],
+  };
+  const bodies = [];
+  const fetchImpl = async (url, opts) => (bodies.push(JSON.parse(opts.body)), anthropicText(JSON.stringify({ decision: "change", prompt: "Teca pushes the gate open.", state: "The gate stands open.", regenerateOpening: true, reason: "Ação ambígua." })));
+  const media = { probe: async () => ({ duration: 6 }), still: async (i, o) => (fs.writeFileSync(o, "jpg"), o) };
+  const reviewer = new ContinuityReviewer({
+    settings: { data: { model: { provider: "anthropic", id: "claude-opus-5-5" } }, key: () => "k" },
+    writer: { resolveModel: async (provider, id) => ({ provider, id, name: "Opus" }) },
+    media,
+    fetchImpl,
+  });
+  const r = await reviewer.revise({ project, scene, index: 0, take: scene.blocks[0].takes[0], verdict: { score: 3, reason: "não abriu", problems: ["O portão segue fechado."] }, work: dir });
+  assert.equal(r.changed, true);
+  assert.equal(r.regenerateOpening, true, "a cena abre com imagem gerada");
+  assert.equal(r.block.prompt, "Teca pushes the gate open.");
+  assert.equal(r.block.currentState, "The gate stands open.");
+  assert.equal(r.block.continuity, "cut", "o 1º bloco mantém a ligação");
+  const text = bodies[0].messages[0].content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
+  assert.match(text, /O portão segue fechado/);
+  assert.match(text, /Rejected take, middle frame/);
+  assert.match(bodies[0].system, /quality judge just rejected/);
+});

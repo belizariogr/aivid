@@ -126,7 +126,15 @@ Ela reprova o take quando o problema seria percebido por quem assiste:
 - há defeito grave;
 - a emenda com o bloco anterior não funciona.
 
-Quando reprova, o Takes gera outro take até o limite de **Retakes se reprovar** (0 a 3; padrão 2). A seed fixa muda a cada retake. Se nenhum take passar, fica o de maior nota e o bloco entra em **Precisa de você**. O seletor de takes mostra a nota de cada um. Com o juiz ligado, as imagens de abertura geradas também são conferidas, e uma imagem recusada é gerada de novo uma vez.
+Quando reprova, o Takes gera outro take até o limite de **Retakes se reprovar** (0 a 3; padrão 2).
+
+Antes de cada retake, a LLM recebe o que o juiz apontou, os quadros do take reprovado, o fim do bloco anterior, a abertura usada e as fotos do elenco. Com isso, ajusta o que fez o take falhar:
+
+- reescreve o prompt quando a ação não aconteceu;
+- corrige o estado;
+- muda a abertura ou pede uma imagem de abertura nova.
+
+Se a falha parecer só azar da geração, ela mantém o plano e o retake só troca a semente. A seed fixa muda a cada retake. O bloco mostra o ajuste e o motivo, com **Desfazer**. Se nenhum take passar, fica o de maior nota e o bloco entra em **Precisa de você**. O seletor de takes mostra a nota de cada um. Com o juiz ligado, as imagens de abertura geradas também são conferidas, e uma imagem recusada é gerada de novo uma vez.
 
 #### Fichas de referência dos personagens
 

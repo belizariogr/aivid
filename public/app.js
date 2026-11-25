@@ -570,7 +570,15 @@ function judgeLine(take) {
 function reviewBox(scene, b) {
   const r = b.review;
   const when = new Date(r.at).toLocaleString("pt-BR");
-  const status = r.undone ? "Revisão desfeita" : r.changed ? "A IA ajustou este bloco" : "A IA conferiu e manteve o plano";
+  const status = r.undone
+    ? "Revisão desfeita"
+    : r.kind === "retake"
+      ? r.changed
+        ? `O juiz reprovou um take e a IA ajustou o bloco para o take seguinte`
+        : `O juiz reprovou um take; a IA manteve o plano e o retake só trocou a semente`
+      : r.changed
+        ? "A IA ajustou este bloco antes de gerar"
+        : "A IA conferiu e manteve o plano";
   return `<div class="review ${r.changed && !r.undone ? "changed" : ""}">
       <strong>${status}</strong> <small class="muted">${esc(r.model || "")} · ${when}</small>
       ${r.reason ? `<div>${esc(r.reason)}</div>` : ""}

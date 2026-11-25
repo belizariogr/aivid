@@ -493,9 +493,61 @@ export class JobQueue {
         this.changed();
         return true;
       }
-      job.phase = `Bloco ${n} reprovado pelo juiz (${verdict.reason || "sem motivo"}). Gerando outro take (${retake + 1} de ${max})…`;
+      job.phase = `Bloco ${n} reprovado pelo juiz (${verdict.reason || "sem motivo"}). Ajustando para o take ${retake + 2}…`;
+      this.changed();
+      await this.reviseAfterJudge(job, blockId, verdict, retake + 1);
+      if (job.cancelRequested) return false;
+      job.phase = `Bloco ${n}: gerando outro take (${retake + 1} de ${max})…`;
       this.changed();
     }
+  }
+
+  // Antes de um retake: a LLM recebe o que o juiz apontou e os quadros do take reprovado e ajusta
+  // prompt, estado ou abertura (ou mantém tudo, e o retake só troca a semente). Se falhar, o retake
+  // segue com o mesmo plano.
+  async reviseAfterJudge(job, blockId, verdict, retake) {
+    if (!this.reviewer?.revise) return;
+    const project = this.store.get(job.projectId);
+    const scene = findScene(project, job.sceneId);
+    const index = scene.blocks.findIndex((b) => b.id === blockId);
+    const block = scene.blocks[index];
+    const take = block?.takes.find((t) => t.id === verdict.takeId);
+    if (!take || !fs.existsSync(take.file)) return;
+    job.phase = `Bloco ${index + 1}: a IA está ajustando o bloco a partir do que o juiz apontou`;
+    this.changed();
+    try {
+      const work = path.join(sceneFolder(project, scene), ".trabalho");
+      await fsp.mkdir(work, { recursive: true });
+      const r = await this.reviewer.revise({ project, scene, index, take, verdict, work, signal: job.abort?.signal });
+      const review = {
+        at: new Date().toISOString(),
+        kind: "retake",
+        retake,
+        changed: r.changed,
+        reason: r.reason,
+        model: r.model,
+        before: r.changed ? { continuity: block.continuity, start: block.start, prompt: block.prompt, note: block.note, currentState: block.currentState ?? "", opening: block.opening ?? "" } : null,
+      };
+      this.store.update(job.projectId, (p) => {
+        const sc = findScene(p, job.sceneId);
+        const b = sc.blocks.find((x) => x.id === blockId);
+        if (!b) return;
+        if (r.changed) Object.assign(b, index === 0 ? { prompt: r.block.prompt, note: r.block.note, currentState: r.block.currentState, opening: r.block.opening } : r.block);
+        if (r.regenerateOpening) {
+          if (index === 0 && sc.start.kind === "keyframe") sc.start = { ...sc.start, id: null };
+          else if (b.start?.kind === "keyframe") b.start = { ...b.start, id: null };
+        }
+        b.review = review;
+      });
+      (job.reviews ??= []).push({ blockIndex: index, changed: r.changed, reason: r.reason, retake });
+    } catch (error) {
+      if (error.code === "ABORTED" || job.cancelRequested || job.abort?.signal.aborted) {
+        job.cancelRequested = true;
+        return;
+      }
+      (job.warnings ??= []).push(`Bloco ${index + 1}: o ajuste antes do retake falhou (${error.message}); o retake usou o mesmo plano.`);
+    }
+    this.changed();
   }
 
   // Juiz depois do bloco: a LLM olha quadros do take e diz se a ação, os personagens, o estado e a
