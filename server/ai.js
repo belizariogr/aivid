@@ -132,7 +132,9 @@ async function streamAnthropic({ key, model, system, messages, signal, onText, f
     system,
     messages,
   };
-  if (model.adaptive) body.thinking = { type: "adaptive" };
+  // Sem "summarized", os modelos novos pensam em silêncio (display "omitted"): nenhum texto chega
+  // durante o planejamento e a interface parece travada.
+  if (model.adaptive) body.thinking = { type: "adaptive", display: "summarized" };
   if (model.effort) body.output_config = { effort };
   const headers = anthropicHeaders(key);
   if (ANTHROPIC_FALLBACK.has(model.id)) {
@@ -147,7 +149,9 @@ async function streamAnthropic({ key, model, system, messages, signal, onText, f
     if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
       text += ev.delta.text;
       onText(text, "writing");
-    } else if (ev.type === "content_block_delta" && ev.delta?.type === "thinking_delta") onText(text, "thinking");
+    } else if (ev.type === "content_block_delta" && ev.delta?.type === "thinking_delta") onText(text, "thinking", ev.delta.thinking ?? "");
+    else if (ev.type === "message_start") onText(text, "received");
+    else if ((ev.type === "content_block_start" && ev.content_block?.type === "thinking") || ev.delta?.type === "signature_delta") onText(text, "thinking", "");
     else if (ev.type === "message_delta") stop = ev.delta?.stop_reason ?? stop;
     else if (ev.type === "error") throw fail(`Claude: ${ev.error?.message || "erro no streaming"}.`, 502);
   }
@@ -170,7 +174,8 @@ async function streamOpenai({ key, model, system, messages, signal, onText, fetc
     if (ev.type === "response.output_text.delta") {
       text += ev.delta;
       onText(text, "writing");
-    } else if (ev.type === "response.reasoning_summary_text.delta" || ev.type === "response.in_progress") onText(text, "thinking");
+    } else if (ev.type === "response.reasoning_summary_text.delta") onText(text, "thinking", ev.delta ?? "");
+    else if (ev.type === "response.created" || ev.type === "response.in_progress") onText(text, "received");
     else if (ev.type === "response.incomplete") {
       const reason = ev.response?.incomplete_details?.reason;
       if (reason === "max_output_tokens") throw fail("A resposta passou do limite de tamanho do modelo. Divida o roteiro em partes menores.", 422);
@@ -280,6 +285,7 @@ export class ScriptWriter {
       modelName: model.name || model.id,
       status: "running",
       phase: "Enviando o roteiro…",
+      thought: "",
       chars: 0,
       attempt: 1,
       text: "",
@@ -299,9 +305,14 @@ export class ScriptWriter {
     const { system, user } = fullScriptRequest(project, input);
     const messages = [{ role: "user", content: user }];
     let last = 0;
-    const onText = (text, kind) => {
+    const onText = (text, kind, thought = "") => {
       task.chars = text.length;
-      task.phase = kind === "thinking" && !text ? "Planejando as cenas…" : task.attempt > 1 ? "Corrigindo o roteiro…" : "Escrevendo as cenas…";
+      const fixing = task.attempt > 1;
+      if (text) task.phase = fixing ? "Corrigindo o roteiro…" : "Escrevendo as cenas…";
+      else if (kind === "received") task.phase = fixing ? "O modelo recebeu os problemas e está pensando na correção…" : "O modelo recebeu o roteiro e está pensando…";
+      else if (kind === "thinking") task.phase = fixing ? "Planejando a correção…" : "Planejando as cenas…";
+      // Fim do resumo do raciocínio, para a interface mostrar no que o modelo está pensando.
+      if (thought) task.thought = (task.thought + thought).replace(/\s+/g, " ").slice(-240);
       if (Date.now() - last > 400) {
         last = Date.now();
         this.emit(task);
@@ -324,7 +335,8 @@ export class ScriptWriter {
         // Uma tentativa de correção: devolve os problemas à LLM junto com a resposta anterior.
         if (task.attempt >= 2) throw fail(`O roteiro gerado ainda tem problemas:\n${errors.join("\n")}`, 422);
         task.attempt += 1;
-        task.phase = "Corrigindo o roteiro…";
+        task.phase = "Enviando os problemas para o modelo corrigir…";
+        task.thought = "";
         this.emit(task);
         messages.push({ role: "assistant", content: text }, { role: "user", content: repairRequest(errors) });
       }

@@ -117,7 +117,7 @@ test("generates the full script with Claude, repairing an invalid first answer",
     assert.equal(sent[0].opts.headers["x-api-key"], "sk-ant-1");
     assert.equal(sent[0].opts.headers["anthropic-beta"], "server-side-fallback-2026-07-01");
     assert.equal(sent[0].body.stream, true);
-    assert.deepEqual(sent[0].body.thinking, { type: "adaptive" });
+    assert.deepEqual(sent[0].body.thinking, { type: "adaptive", display: "summarized" });
     assert.equal(sent[0].body.output_config.effort, "high");
     assert.match(sent[0].body.system, /ANA|Ana/);
     assert.match(sent[0].body.messages[0].content, /<script>\nANA entra no café/);
@@ -256,4 +256,34 @@ test("the judge sees the take, the previous block and the character references",
   assert.deepEqual(stills, [["t1.mp4", "last"], ["t2.mp4", 0], ["t2.mp4", 2], ["t2.mp4", "last"], ["teca.png", "image"], ["teca-body.png", "image"]]);
   assert.match(bodies[0].messages[0].content[0].text, /State that must hold: The gate is open\./);
   assert.match(bodies[0].system, /quality judge/);
+});
+
+test("the stream reports that the model received the script and is thinking", async () => {
+  const { ask } = await import("../server/ai.js");
+  const body = sseBody([
+    { type: "message_start", message: { id: "m" } },
+    { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Dividindo o roteiro em cenas." } },
+    { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "x" } },
+    { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "{}" } },
+    { type: "message_delta", delta: { stop_reason: "end_turn" } },
+  ]);
+  const seen = [];
+  const text = await ask("anthropic", {
+    key: "k",
+    model: { id: "claude-opus-5-5", adaptive: true },
+    system: "s",
+    messages: [],
+    fetchImpl: async () => stream(body),
+    onText: (t, kind, thought) => seen.push([kind, thought ?? null, t]),
+  });
+  assert.equal(text, "{}");
+  assert.deepEqual(seen, [
+    ["received", null, ""],
+    ["thinking", "", ""],
+    ["thinking", "Dividindo o roteiro em cenas.", ""],
+    ["thinking", "", ""],
+    ["writing", null, "{}"],
+  ]);
 });

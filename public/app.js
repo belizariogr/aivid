@@ -939,15 +939,26 @@ function aiSection() {
           : `<button class="btn primary" data-action="ai-generate" ${configured ? "" : "disabled"}>Gerar cenas</button>`
       }
     </div>
-    ${running ? `<p class="hint ai-progress">${aiProgress(t)}</p>` : ""}
+    ${running ? `<div class="hint ai-running"><span class="spinner" aria-hidden="true"></span><p class="ai-progress">${aiProgress(t)}</p></div>` : ""}
     ${t?.status === "error" ? `<pre class="error">${esc(t.error)}</pre>` : ""}
   </section>`;
 }
 
 function aiProgress(t) {
   const size = t.chars ? ` · ${(t.chars / 1000).toFixed(1)} mil caracteres` : "";
-  return `${esc(t.modelName)}: ${esc(t.phase)}${size} · ${PHASE_SECONDS(t)} s`;
+  const thought = t.thought && !t.chars ? `<br><small class="muted">…${esc(t.thought)}</small>` : "";
+  const quiet = !t.chars && PHASE_SECONDS(t) > 30 ? " Um roteiro inteiro pode levar alguns minutos de raciocínio antes de o texto começar." : "";
+  return `${esc(t.modelName)}: ${esc(t.phase)}${size} · ${fmtElapsed(PHASE_SECONDS(t))}${quiet ? `<br><small class="muted">${quiet}</small>` : ""}${thought}`;
 }
+
+const fmtElapsed = (s) => (s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, "0")} s`);
+
+// O contador anda sozinho: durante o raciocínio podem passar minutos sem nenhum evento.
+setInterval(() => {
+  const t = state.llm?.task;
+  const line = document.querySelector(".ai-progress");
+  if (t?.status === "running" && line) line.innerHTML = aiProgress(t);
+}, 1000);
 
 function llmModal() {
   const p = state.project;

@@ -259,3 +259,8 @@ textarea.state { font-size: 13px; margin-top: 6px; }
 button.link { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; }
 .refs { display: flex; gap: 6px; margin-bottom: 6px; }
 .refs img { height: 72px; border-radius: 6px; border: 1px solid var(--line); object-fit: cover; }
+
+.ai-running { display: flex; gap: 8px; align-items: flex-start; }
+.ai-running .ai-progress { margin: 0; }
+.spinner { flex: none; display: inline-block; width: 10px; height: 10px; margin-top: 4px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -1px; }
+@keyframes spin { to { transform: rotate(360deg); } }
