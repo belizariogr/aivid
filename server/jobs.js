@@ -142,6 +142,8 @@ export class JobQueue {
     this.jobs = [];
     this.running = null;
     this.pollMs = 1500;
+    // Consultas seguidas sem resposta do LTX antes de dar uma geração recuperada como perdida.
+    this.recoverTolerance = 40;
     this.idlePoll = 3000;
     // Pausa antes de cada nova tentativa de um bloco que falhou; o tamanho da lista é o número de novas tentativas.
     this.retryDelays = [5000, 15000];
@@ -410,7 +412,18 @@ export class JobQueue {
     const inf = job.inflight;
     const lost = () =>
       Object.assign(new Error("A geração em andamento se perdeu quando o Takes foi fechado (o LTX também foi fechado ou começou outra coisa). Use Retomar para gerar de novo."), { code: "INTERRUPTED" });
-    let p = await this.ltx.progress().catch(() => null);
+    // Durante a inferência o LTX às vezes demora a responder: só desiste depois de várias
+    // consultas seguidas sem resposta, não na primeira.
+    const poll = async () => {
+      for (let miss = 0; miss < this.recoverTolerance; miss++) {
+        const r = await this.ltx.progress().catch(() => null);
+        if (r) return r;
+        if (job.cancelRequested) return null;
+        await new Promise((res) => setTimeout(res, this.pollMs));
+      }
+      return null;
+    };
+    let p = await poll();
     if (!p) throw lost();
     const ours = job.ltxGenerationId ?? (p.id && p.id !== job.ltxBefore ? p.id : null);
     // O pedido nem chegou a começar no LTX (ou o LTX foi reiniciado): basta gerar de novo.
@@ -428,7 +441,8 @@ export class JobQueue {
       this.changed();
       if (job.cancelRequested) return;
       await new Promise((r) => setTimeout(r, this.pollMs));
-      p = await this.ltx.progress().catch(() => null);
+      p = await poll();
+      if (job.cancelRequested) return;
       if (!p || p.id !== ours) throw lost();
     }
     job.ltxActive = false;

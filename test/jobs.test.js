@@ -664,3 +664,31 @@ test("a block recovered after reopening is judged too", { skip: !ffmpeg && "ffmp
   assert.equal(queue.jobs[0].status, "complete", queue.jobs[0].error);
   assert.deepEqual(judged, ["a", "b"], "o bloco recuperado e o seguinte passam pelo juiz");
 });
+
+test("a recovered generation survives the LTX not answering for a while", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-rec-"));
+  const { store, state, file, ltxDir, projectId } = await closeMidGeneration(root);
+  const ltx = new ControlledLtx(ltxDir, state);
+  // Cinco consultas seguidas falham no meio da recuperação, como quando o LTX está ocupado demais.
+  let misses = 0;
+  const progress = ltx.progress.bind(ltx);
+  ltx.progress = async () => {
+    if (state.flaky && misses < 5) {
+      misses++;
+      throw new Error("timeout");
+    }
+    return progress();
+  };
+  const queue = new JobQueue({ store, ltx, file });
+  queue.pollMs = 10;
+  await new Promise((r) => setTimeout(r, 40));
+  state.flaky = true;
+  await new Promise((r) => setTimeout(r, 120));
+  const video = path.join(ltxDir, "terminado.mp4");
+  makeVideo(video, 73, 24, "blue");
+  Object.assign(state, { status: "complete", progress: 100, result: video });
+  await waitIdle(queue);
+  assert.equal(misses, 5);
+  assert.equal(queue.jobs[0].status, "complete", queue.jobs[0].error);
+  assert.equal(store.get(projectId).scenes[0].blocks.filter((b) => b.takes.length).length, 2);
+});
