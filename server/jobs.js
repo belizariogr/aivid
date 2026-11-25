@@ -51,7 +51,7 @@ export function resolveStart(project, scene, index, spec = openingSpec(scene, in
     if (from < 0) throw fatal(`O bloco ${n} começa do último quadro de um bloco que foi removido. Escolha outra imagem inicial.`);
     if (from >= index) throw fatal(`O bloco ${n} começa do último quadro do bloco ${from + 1}, que vem depois dele. Escolha um bloco anterior.`);
     const take = selectedTake(scene.blocks[from]);
-    if (!take) throw fatal(`O bloco ${n} começa do último quadro do bloco ${from + 1}, que ainda não foi gerado.`);
+    if (!take) throw Object.assign(fatal(`O bloco ${n} começa do último quadro do bloco ${from + 1}, que ainda não foi gerado.`), { pending: true });
     if (!fs.existsSync(take.file)) throw fatal(`O vídeo do bloco ${from + 1} não está mais em ${take.file}.`);
     return { source: { scene, block: scene.blocks[from], take } };
   }
@@ -61,7 +61,7 @@ export function resolveStart(project, scene, index, spec = openingSpec(scene, in
     if (!before?.blocks.length) throw fatal(`A cena "${scene.title}" abre do último quadro da cena anterior, mas não há cena anterior com blocos.`);
     const last = before.blocks.at(-1);
     const take = selectedTake(last);
-    if (!take) throw fatal(`A cena "${scene.title}" abre do último quadro da cena anterior, que ainda não foi gerada até o fim.`);
+    if (!take) throw Object.assign(fatal(`A cena "${scene.title}" abre do último quadro da cena anterior, que ainda não foi gerada até o fim.`), { pending: true });
     if (!fs.existsSync(take.file)) throw fatal(`O vídeo do último bloco da cena anterior não está mais em ${take.file}.`);
     return { source: { scene: before, block: last, take } };
   }
@@ -948,6 +948,8 @@ export class JobQueue {
     try {
       from = resolveStart(project, scene, index, ref, 1);
     } catch (error) {
+      // Referência que ainda vai existir (bloco ou cena anterior por gerar): espera, não improvisa.
+      if (error.pending) throw error;
       // A referência sumiu (fundo excluído, bloco removido): gera a abertura só pelo texto.
       (job.warnings ??= []).push(`Bloco ${index + 1}: a referência da imagem de abertura não está disponível (${error.message}); a imagem foi gerada só pelo texto.`);
       from = { image: null };

@@ -755,3 +755,23 @@ test("a recovered generation survives the LTX not answering for a while", { skip
   assert.equal(queue.jobs[0].status, "complete", queue.jobs[0].error);
   assert.equal(store.get(projectId).scenes[0].blocks.filter((b) => b.takes.length).length, 2);
 });
+
+test("a generated opening waits for a reference that is not generated yet", { skip: !ffmpeg && "ffmpeg ausente" }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  const queue = new JobQueue({ store, ltx });
+  const p = store.create("Ordem");
+  store.edit(p.id, {
+    outputDir: path.join(root, "out"),
+    scenes: [
+      { id: "s1", title: "Um", blocks: [{ id: "a", prompt: "a", duration: 2 }] },
+      { id: "s2", title: "Dois", start: { kind: "keyframe", ref: { kind: "previous" } }, blocks: [{ id: "b", prompt: "b", opening: "o", duration: 2 }] },
+    ],
+  });
+  queue.addScene(p.id, "s2");
+  await waitIdle(queue);
+  assert.equal(queue.jobs[0].status, "error");
+  assert.match(queue.jobs[0].error, /ainda não foi gerada até o fim/);
+  assert.equal(ltx.calls.length, 0, "não gera a abertura só pelo texto");
+});
