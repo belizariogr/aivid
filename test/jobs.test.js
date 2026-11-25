@@ -641,3 +641,26 @@ test("before a retake the AI adjusts the block from what the judge pointed out",
   assert.equal(block.review.before.prompt, "Teca and the gate.");
   assert.deepEqual(job.reviews.map((r) => r.retake), [1]);
 });
+
+test("a block recovered after reopening is judged too", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-rec-"));
+  const { store, state, file, ltxDir, projectId } = await closeMidGeneration(root);
+  store.edit(projectId, { settings: { judge: true, retakes: 1 } });
+  const judged = [];
+  const reviewer = {
+    async judge({ scene, index }) {
+      judged.push(scene.blocks[index].id);
+      return { pass: true, score: 8, problems: [], reason: "ok", model: "Fake" };
+    },
+  };
+  const ltx = new ControlledLtx(ltxDir, state);
+  const queue = new JobQueue({ store, ltx, file, reviewer });
+  queue.pollMs = 10;
+  await new Promise((r) => setTimeout(r, 60));
+  const video = path.join(ltxDir, "terminado.mp4");
+  makeVideo(video, 73, 24, "blue");
+  Object.assign(state, { status: "complete", progress: 100, result: video });
+  await waitIdle(queue);
+  assert.equal(queue.jobs[0].status, "complete", queue.jobs[0].error);
+  assert.deepEqual(judged, ["a", "b"], "o bloco recuperado e o seguinte passam pelo juiz");
+});

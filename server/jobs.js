@@ -292,7 +292,16 @@ export class JobQueue {
     try {
       if (job.recovering) {
         job.recovering = false;
-        if (job.inflight) await this.recoverInflight(job);
+        if (job.inflight) {
+          const recovered = job.inflight.type === "block" ? job.inflight.blockId : null;
+          await this.recoverInflight(job);
+          // O bloco recuperado também passa pelo juiz (e pelos retakes, se reprovar).
+          if (recovered && job.kind === "video" && job.done?.includes(recovered) && !job.cancelRequested) {
+            const index = findScene(this.store.get(job.projectId), job.sceneId).blocks.findIndex((b) => b.id === recovered);
+            job.current = { ...job.current, index };
+            await this.renderBlockJudged(job, recovered, { rendered: true });
+          }
+        }
       }
       if (!job.cancelRequested) {
         if (job.kind === "video") await this.runVideo(job);
@@ -470,12 +479,13 @@ export class JobQueue {
   // Não repete cancelamentos nem erros que só o usuário resolve (pasta de saída, bloco anterior ausente).
   // Revisão antes, geração com novas tentativas e, com o juiz ligado, retakes até aprovar.
   // Se nenhum take for aprovado, fica o de maior nota e o bloco aparece em "Precisa de você".
-  async renderBlockJudged(job, blockId) {
-    await this.reviewBlock(job, blockId);
+  // `rendered`: o 1º take já existe (recuperado depois de reabrir o Takes); só falta o juiz.
+  async renderBlockJudged(job, blockId, { rendered = false } = {}) {
+    if (!rendered) await this.reviewBlock(job, blockId);
     if (job.cancelRequested) return false;
     const verdicts = [];
     for (let retake = 0; ; retake++) {
-      const ok = await this.renderBlockWithRetry(job, blockId, { retake });
+      const ok = rendered && retake === 0 ? true : await this.renderBlockWithRetry(job, blockId, { retake });
       if (!ok) return false;
       const verdict = await this.judgeBlock(job, blockId);
       if (!verdict) return true;
