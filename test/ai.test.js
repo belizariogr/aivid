@@ -330,3 +330,28 @@ test("the reviser gets the judge's problems and the rejected frames", async () =
   assert.match(text, /Rejected take, middle frame/);
   assert.match(bodies[0].system, /quality judge just rejected/);
 });
+
+test("the reviser can give the first block of a scene a generated opening", async () => {
+  const { ContinuityReviewer } = await import("../server/review.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "takes-revise-"));
+  const file = (name) => (fs.writeFileSync(path.join(dir, name), "x"), path.join(dir, name));
+  const project = { prePrompt: "", characters: [], backgrounds: [{ id: "praca", name: "Praça", description: "square", image: file("bg.png") }] };
+  const scene = {
+    title: "Portão",
+    backgroundId: "praca",
+    characterIds: [],
+    start: { kind: "background", id: "praca" },
+    blocks: [{ id: "a", prompt: "Teca and the gate", duration: 6, continuity: "cut", takes: [{ id: "t1", file: file("t1.mp4") }], selectedTakeId: "t1" }],
+  };
+  const fetchImpl = async () => anthropicText(JSON.stringify({ decision: "change", start: "keyframe", opening: "Wide shot: Teca stands by the gate, Pingo above her.", prompt: "Teca waves.", reason: "Abertura sem personagens." }));
+  const reviewer = new ContinuityReviewer({
+    settings: { data: { model: { provider: "anthropic", id: "claude-opus-5-5" } }, key: () => "k" },
+    writer: { resolveModel: async (provider, id) => ({ provider, id, name: "Opus" }) },
+    media: { probe: async () => ({ duration: 6 }), still: async (i, o) => (fs.writeFileSync(o, "jpg"), o) },
+    fetchImpl,
+  });
+  const r = await reviewer.revise({ project, scene, index: 0, take: scene.blocks[0].takes[0], verdict: { score: 3, problems: [] }, work: dir });
+  assert.deepEqual(r.sceneStart, { kind: "keyframe", id: null, ref: { kind: "background", id: "praca" } });
+  assert.equal(r.block.opening, "Wide shot: Teca stands by the gate, Pingo above her.");
+  assert.equal(r.changed, true);
+});

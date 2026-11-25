@@ -57,7 +57,7 @@ const REVISE_SYSTEM = `You fix a block of a video made with LTX, a local text/im
 Find why the take failed and change what will make the next take pass:
 - If the action did not happen or came out wrong, rewrite the prompt so the action is simple, explicit and in chronological order; describe one main action per block; name who does what, where and how the camera frames it.
 - If the place or an object is in the wrong state, fix "state" and say it in the prompt too.
-- If the opening image was wrong (wrong state, wrong framing, wrong characters), change the opening: for a "cut", a different "start" or a better "opening" description, or set "regenerateOpening" to true to generate the opening image again.
+- If the opening image was wrong (wrong state, wrong framing, wrong or missing characters), change the opening: for a "cut", a different "start" or a better "opening" description, or set "regenerateOpening" to true to generate the opening image again. Block 1 opens the scene: to fix its opening, set "start": "keyframe" with an "opening" that places the characters in the first frame and a "reference" ("background:<id>", "none"), or "regenerateOpening" when it already is a keyframe. Never claim a change you did not put in the JSON.
 - If the take looks like plain bad luck of the generation (a glitch, a deformed hand) and the plan is right, keep everything ("decision": "keep"); the next take uses a different seed.
 
 Keep the block's story, dialogue, duration and characters. ${STYLE}
@@ -266,12 +266,30 @@ export class ContinuityReviewer {
       REVISE_SYSTEM,
       m.parts,
       (data) => {
-        // O 1º bloco abre a cena: a ligação e a abertura dele são da cena.
+        // O 1º bloco abre a cena: a ligação dele é fixa e a abertura é a da cena.
         const fixed = index === 0 ? { ...data, continuity: block.continuity, start: null } : data;
         const r = this.parse(project, scene, index, fixed);
-        const keyframe = index === 0 ? scene.start?.kind === "keyframe" : r.block.start?.kind === "keyframe";
+        // No 1º bloco a descrição do quadro de abertura vale para a abertura da cena.
+        if (index === 0 && typeof data.opening === "string" && data.opening.trim()) {
+          r.block.opening = data.opening.trim();
+          if (r.block.opening !== (block.opening || "")) r.changed = true;
+        }
+        let sceneStart = null;
+        if (index === 0 && String(data.start ?? "").trim().toLowerCase() === "keyframe") {
+          const errors = [];
+          const ref = data.reference
+            ? parseCutStart(project, String(data.reference).replace(/^scene$/i, "none"), 1, errors, "Bloco 1 (\"reference\")", { keyframe: false })
+            : scene.backgroundId
+              ? { kind: "background", id: scene.backgroundId }
+              : { kind: "none", id: null };
+          if (errors.length) throw Object.assign(fail(errors.join(" ")), { details: errors });
+          if (!r.block.opening) throw fail('"start": "keyframe" sem "opening".');
+          const same = scene.start?.kind === "keyframe" && JSON.stringify(scene.start.ref) === JSON.stringify(ref) && r.block.opening === block.opening;
+          if (!same) sceneStart = { kind: "keyframe", id: null, ref };
+        }
+        const keyframe = index === 0 ? (sceneStart ?? scene.start)?.kind === "keyframe" : r.block.start?.kind === "keyframe";
         const regenerateOpening = Boolean(data.regenerateOpening) && keyframe;
-        return { ...r, regenerateOpening, changed: r.changed || regenerateOpening };
+        return { ...r, sceneStart, regenerateOpening, changed: r.changed || regenerateOpening || Boolean(sceneStart) };
       },
       signal,
     );

@@ -279,9 +279,12 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
   // Volta o bloco ao que era antes da revisão de continuidade com IA.
   route("POST", "/api/projects/:id/scenes/:sid/blocks/:kid/review/undo", ({ id, sid, kid }) => {
     const updated = store.update(id, (p) => {
-      const block = findScene(p, sid).blocks.find((b) => b.id === kid);
+      const scene = findScene(p, sid);
+      const block = scene.blocks.find((b) => b.id === kid);
       if (!block?.review?.before || block.review.undone) throw Object.assign(new Error("Não há revisão para desfazer neste bloco."), { status: 409 });
-      Object.assign(block, block.review.before);
+      const { sceneStart, ...before } = block.review.before;
+      Object.assign(block, before);
+      if (sceneStart) scene.start = sceneStart;
       block.review = { ...block.review, undone: true, at: new Date().toISOString() };
     });
     return view(updated);

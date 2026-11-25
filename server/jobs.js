@@ -536,13 +536,16 @@ export class JobQueue {
         changed: r.changed,
         reason: r.reason,
         model: r.model,
-        before: r.changed ? { continuity: block.continuity, start: block.start, prompt: block.prompt, note: block.note, currentState: block.currentState ?? "", opening: block.opening ?? "" } : null,
+        before: r.changed
+          ? { continuity: block.continuity, start: block.start, prompt: block.prompt, note: block.note, currentState: block.currentState ?? "", opening: block.opening ?? "", ...(r.sceneStart ? { sceneStart: scene.start } : {}) }
+          : null,
       };
       this.store.update(job.projectId, (p) => {
         const sc = findScene(p, job.sceneId);
         const b = sc.blocks.find((x) => x.id === blockId);
         if (!b) return;
         if (r.changed) Object.assign(b, index === 0 ? { prompt: r.block.prompt, note: r.block.note, currentState: r.block.currentState, opening: r.block.opening } : r.block);
+        if (index === 0 && r.sceneStart) sc.start = r.sceneStart;
         if (r.regenerateOpening) {
           if (index === 0 && sc.start.kind === "keyframe") sc.start = { ...sc.start, id: null };
           else if (b.start?.kind === "keyframe") b.start = { ...b.start, id: null };
