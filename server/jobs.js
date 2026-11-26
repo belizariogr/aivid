@@ -1380,6 +1380,7 @@ export class JobQueue {
 
   async drawFrame(job, blockId, frameId, label) {
     const signal = job.abort.signal;
+    let best = null; // a melhor tentativa reprovada: é ela que fica se as três forem reprovadas
     for (let attempt = 1; attempt <= 3; attempt++) {
       if (job.cancelRequested) return;
       const project = this.store.get(job.projectId);
@@ -1423,12 +1424,14 @@ export class JobQueue {
         return this.setFrame(job, blockId, frameId, { status: "approved" });
       }
       this.learn(job, v.memory, `IA · storyboard de ${scene.title}, bloco ${index + 1}`);
-      const judge = { pass: v.pass, problems: v.problems, reason: v.reason, model: v.model, at: new Date().toISOString(), attempt };
-      (job.judged ??= []).push({ blockIndex: index, pass: v.pass, frame: frame.at });
+      const judge = { pass: v.pass, score: v.score, problems: v.problems, reason: v.reason, model: v.model, at: new Date().toISOString(), attempt };
+      (job.judged ??= []).push({ blockIndex: index, pass: v.pass, score: v.score, frame: frame.at, reason: v.reason });
       if (v.pass) return this.setFrame(job, blockId, frameId, { status: "approved", judge });
+      const imageId = findScene(this.store.get(job.projectId), job.sceneId).blocks.find((b) => b.id === blockId)?.frames.find((f) => f.id === frameId)?.imageId ?? null;
+      if (!best || (v.score ?? 0) > (best.judge.score ?? 0)) best = { judge, imageId, description: frame.description };
       if (attempt === 3) {
-        (job.warnings ??= []).push(`Quadro ${frame.at} s do bloco ${index + 1}: reprovado 3 vezes (${v.reason}); ficou o último. Refaça na aba Storyboard se precisar.`);
-        return this.setFrame(job, blockId, frameId, { status: "rejected", judge });
+        (job.warnings ??= []).push(`Quadro ${frame.at} s do bloco ${index + 1}: reprovado 3 vezes (${best.judge.reason}); ficou a melhor tentativa (${best.judge.attempt}ª, nota ${best.judge.score}). Refaça na aba Storyboard se precisar.`);
+        return this.setFrame(job, blockId, frameId, { status: "rejected", judge: best.judge, ...(best.imageId ? { imageId: best.imageId, description: best.description } : {}) });
       }
       // Reprovado: a próxima imagem sai da descrição corrigida (e do prompt do bloco, se a IA mudou).
       this.setFrame(job, blockId, frameId, { status: "pending", judge, imageId: null, ...(v.description ? { description: v.description } : {}) }, v.prompt);

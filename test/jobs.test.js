@@ -960,6 +960,35 @@ test("storyboard by default draws only each shot's opening and starts the video 
   assert.equal(ltx.calls.filter((c) => c[0] === "extend").length, 1);
 });
 
+test("a storyboard frame rejected three times keeps its best attempt", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  const scores = [4, 7, 3];
+  const reviewer = {
+    async planStoryboard({ layout }) {
+      return { blocks: layout.map((frames, index) => ({ index, plate: null, prompt: null, frames: frames.map((f) => ({ at: f.at, description: "try 1" })) })) };
+    },
+    async checkFrame({ frame }) {
+      const score = scores.shift();
+      return { pass: false, score, problems: [], reason: `nota ${score}`, description: `${frame.description}+`, prompt: null, memory: { add: [], remove: [] }, model: "Fake" };
+    },
+  };
+  const queue = new JobQueue({ store, ltx, reviewer });
+  const p = store.create("Melhor");
+  store.edit(p.id, { outputDir: path.join(root, "out"), settings: { storyboard: true }, scenes: [{ id: "s", title: "Plano", blocks: [{ id: "a", prompt: "a", duration: 4 }] }] });
+  queue.addStoryboard(p.id, "s");
+  await waitIdle(queue);
+  const project = store.get(p.id);
+  const frame = project.scenes[0].blocks[0].frames[0];
+  assert.equal(frame.status, "rejected");
+  assert.equal(frame.judge.score, 7);
+  assert.equal(frame.description, "try 1+");
+  const drawn = project.previews.filter((x) => x.kind === "frame").reverse();
+  assert.equal(drawn.length, 3);
+  assert.equal(frame.imageId, drawn[1].id, "fica a imagem da 2ª tentativa, a de nota mais alta");
+});
+
 test("a continuation gets the whole shot so far as context, not just the last seconds", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
   const store = new Store(path.join(root, "lib"));

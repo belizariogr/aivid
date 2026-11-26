@@ -79,6 +79,8 @@ const DRAFT_NOTE = (resolution) =>
 
 const STORYBOARD_SYSTEM = `You are the storyboard artist of a video made with LTX, a local text/image-to-video model, inside the Takes app. Before any video is rendered, an image model draws a few still frames of every block; LTX then renders the block passing exactly through those frames (they are pinned keyframes). The frames decide what the video shows, so they must be precise and consistent.
 
+When a block asks only for the frame at 0 s, that frame is the opening image of the shot: LTX animates the whole block from it, so it shows the place, the characters and the state at the very start of the action, in a pose the action can start from.
+
 For every block listed, write one description per frame time it asks for. A frame marked "shared" is the last frame of the previous block and is not yours to describe. Each description is the COMPLETE prompt the image model receives, nothing is added to it, and the image model breaks down with long prompts: write at most 90 words (about 600 characters), plain and concrete, in this order: the style in a few words (from the pre-prompt, e.g. "3D animated children's film still, cardboard village"), the framing (shot size, angle), each character with their essential look (species, colors, outfit, from the project characters and notes) and their position, pose and expression, the objects that matter and their visible state, and the light. Do not use negations or lists of things to avoid. Consecutive frames must be the same place and the same characters, with positions that change plausibly within the seconds between them; a "cut" block may change the angle but keeps the place, the moment and the state.
 
 For every block marked "shotStart" (the first block of a shot), also write "plate": the prompt of the EMPTY place seen from this shot's camera, with no characters, in the state the place is in at that moment (at most 90 words, same style rules). It is drawn from the project background image and every frame of the shot starts from it, so the place stays the same within the shot. Describe the same buildings and objects as the background image (same count: one windmill stays one windmill). Also give "plateChange": "same" when the shot's camera is close to the background image's view, "near" for a moderately different framing of the same view, "new" for a clearly different angle (reverse shot, close-up of a detail).
@@ -102,7 +104,7 @@ When it fails, rewrite the frame "description" so the next drawing gets it right
 ${MEMORY_RULES}
 
 Reply with ONLY a JSON object, no text before or after it:
-{"pass": true or false, "problems": ["each problem in Brazilian Portuguese"], "reason": "one sentence in Brazilian Portuguese", "description": "rewritten English description (only when failing)", "prompt": "corrected block prompt (optional)", "memory": {"add": [], "remove": []} (optional)}`;
+{"pass": true or false, "score": 1 to 10 (how good a frame it is for the film; 8 or more passes), "problems": ["each problem in Brazilian Portuguese"], "reason": "one sentence in Brazilian Portuguese", "description": "rewritten English description (only when failing)", "prompt": "corrected block prompt (optional)", "memory": {"add": [], "remove": []} (optional)}`;
 
 const fail = (message) => Object.assign(new Error(message), { status: 422 });
 
@@ -373,7 +375,9 @@ export class ContinuityReviewer {
         this.projectText(project, scene),
         plate
           ? `This is the BACKGROUND PLATE of the shot that starts at block ${index + 1}: the empty place, with NO characters, that every frame of the shot is drawn from. Fail it if any character or creature appears, or if it is not recognizably the same place as the background image: the same kinds and NUMBER of buildings and landmarks (one windmill stays one windmill), the same style; a different camera angle is fine when the description asks for it.`
-          : `Block ${index + 1} of the scene, frame at ${frame.at} s of ${block.duration} s.`,
+          : frame.at === 0 && !(block.frames ?? []).some((f) => f.at > 0)
+            ? `Block ${index + 1} of the scene: this is the OPENING frame of the shot, the only image LTX gets; it animates the whole block from it. Judge it as the starting point of the block prompt (right characters, place, state, framing and a pose the action can start from), not whether it already shows the whole action.`
+            : `Block ${index + 1} of the scene, frame at ${frame.at} s of ${block.duration} s.`,
         `${plate ? "Plate" : "Frame"} description: ${frame.description}`,
         `State that must show: ${block.currentState || "(nothing differs from the background)"}`,
         `Block prompt: ${block.prompt}`,
@@ -393,6 +397,7 @@ export class ContinuityReviewer {
         if (typeof data.pass !== "boolean") throw fail('"pass" precisa ser true ou false.');
         return {
           pass: data.pass,
+          score: Number.isFinite(Number(data.score)) ? Math.max(1, Math.min(10, Math.round(Number(data.score)))) : data.pass ? 8 : 4,
           problems: Array.isArray(data.problems) ? data.problems.filter((p) => typeof p === "string") : [],
           reason: text(data.reason),
           description: data.pass ? null : text(data.description).slice(0, FRAME_MAX_CHARS + 200) || null,
