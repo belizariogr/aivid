@@ -44,6 +44,7 @@ Decide whether this take is good enough to keep, as a demanding but pragmatic fi
 - A character is missing, duplicated or does not look like their reference (face, hair, outfit), or an extra person appears that the prompt does not describe.
 - The "state" (for example an open gate, a missing object) does not hold.
 - Severe artifacts: melting or deformed faces or hands, morphing objects, garbled frames.
+- Secondary choreography (exact paw placement, which side a character hovers on, how far the camera drifts, a small prop) does not fail a take on its own: list it as a problem and take at most one point for it. A take that keeps the characters, the place and the state clean and shows the story beat that matters is a pass even if some secondary beats are missing.
 - The transition from the previous block breaks continuity: with "continue" or "frame" the first frame must match the previous block's last frame; with a "cut" the new shot must plausibly show the same place, moment and state.
 
 Reply with ONLY a JSON object, no text before or after it:
@@ -59,7 +60,7 @@ Reply with ONLY a JSON object, no text before or after it:
 const REVISE_SYSTEM = `You fix a block of a video made with LTX, a local text/image-to-video model, inside the Takes app. The quality judge just rejected a take of this block. LTX will render the block again. You see the judge's verdict, frames of the rejected take in order (one every few seconds, then the last one), the last frame of the previous block, the opening image that was used and reference photos of the characters.
 
 Find why the take failed and change what will make the next take pass:
-- If the action did not happen or came out wrong, rewrite the prompt so the action is simple, explicit and in chronological order; describe one main action per block; name who does what, where and how the camera frames it.
+- If the action did not happen or came out wrong, rewrite the prompt so the action is simple, explicit and in chronological order; describe one main action per block; name who does what, where and how the camera frames it. LTX follows two or three simple beats in 20 seconds at best: a longer, more detailed choreography (exact paw placement, which side a bird hovers on, a small prop to touch) scores WORSE. When a beat failed, keep the story beat that matters and cut the secondary beats and any prop that is not visibly in the place (a latch nobody can see), instead of adding detail. Keep the prompt under about 110 words.
 - If the place or an object is in the wrong state, fix "state" and say it in the prompt too.
 - If the opening image was wrong (wrong state, wrong framing, wrong or missing characters), change the opening: for a "cut", a different "start" or a better "opening" description, or set "regenerateOpening" to true to generate the opening image again. Block 1 opens the scene: to fix its opening, set "start": "keyframe" with an "opening" that places the characters in the first frame and a "reference" ("background:<id>", "none"), or "regenerateOpening" when it already is a keyframe. Never claim a change you did not put in the JSON.
 - If the take looks like plain bad luck of the generation (a glitch, a deformed hand) and the plan is right, keep everything ("decision": "keep"); the next take uses a different seed.
