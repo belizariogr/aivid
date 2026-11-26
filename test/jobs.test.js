@@ -1008,3 +1008,45 @@ test("a continuation gets the whole shot so far as context, not just the last se
   const frames = await Promise.all(store.get(p.id).scenes[0].blocks.map(async (b) => (await media.probe(selectedTake(b).file)).frames));
   assert.deepEqual(frames, [96, 96, 72, 48, 48]);
 });
+
+test("LTX gets the pre-prompt's style line, summarized once per pre-prompt by the AI", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  const asked = [];
+  const reviewer = {
+    async videoStyle({ project }) {
+      asked.push(project.prePrompt);
+      return { style: `STYLE OF ${project.prePrompt.split(".")[0]}` };
+    },
+  };
+  const queue = new JobQueue({ store, ltx, reviewer });
+  const p = store.create("Estilo");
+  store.edit(p.id, {
+    outputDir: path.join(root, "out"),
+    prePrompt: "Cardboard world. They hop, zip, spin and tumble.",
+    scenes: [{ id: "s", title: "Cena", blocks: [{ id: "a", prompt: "Teca waves.", duration: 2 }, { id: "b", prompt: "Teca sits.", duration: 2, continuity: "frame" }] }],
+  });
+  queue.addScene(p.id, "s");
+  await waitIdle(queue);
+  assert.equal(queue.jobs[0].status, "complete", queue.jobs[0].error);
+  assert.deepEqual(asked, ["Cardboard world. They hop, zip, spin and tumble."], "uma vez só para o mesmo pré-prompt");
+  const prompts = ltx.calls.filter((c) => c[0] !== "image").map((c) => c[1].prompt);
+  for (const prompt of prompts) {
+    assert.match(prompt, /^STYLE OF Cardboard world/);
+    assert.doesNotMatch(prompt, /tumble/);
+  }
+  // Pré-prompt novo: o resumo antigo deixa de valer e a IA resume de novo.
+  store.edit(p.id, { prePrompt: "Clay world. Snappy cuts." });
+  queue.addScene(p.id, "s", { missing: false });
+  await waitIdle(queue);
+  assert.equal(asked.length, 2);
+  assert.match(ltx.calls.at(-1)[1].prompt, /^STYLE OF Clay world/);
+  // Editado à mão: vale até o pré-prompt mudar.
+  store.edit(p.id, { videoStyle: "Hand style." });
+  assert.deepEqual(store.get(p.id).videoStyle, { text: "Hand style.", from: "Clay world. Snappy cuts.", by: "você" });
+  queue.addScene(p.id, "s", { missing: false });
+  await waitIdle(queue);
+  assert.equal(asked.length, 2);
+  assert.match(ltx.calls.at(-1)[1].prompt, /^Hand style\./);
+});

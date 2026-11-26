@@ -94,7 +94,10 @@ function saveNow() {
     backgrounds: p.backgrounds,
     scenes: p.scenes,
     memory: p.memory ?? [],
+    // Só quando você mexe no estilo do LTX: senão o resumo da IA continua sendo dela.
+    ...(p.videoStyleEdit !== undefined ? { videoStyle: p.videoStyleEdit } : {}),
   };
+  delete p.videoStyleEdit;
   pendingSaves++;
   saving = saving
     .then(() => api("PUT", `/api/projects/${p.id}`, payload))
@@ -421,6 +424,9 @@ function overview() {
         <h3>Estilo</h3>
         <label><span>Pré-prompt <span class="muted small">entra antes de todo prompt de vídeo e imagem; em inglês</span></span>
           <textarea data-bind="p.prePrompt" rows="7" placeholder="Ex.: Cinematic 35mm film look, warm golden-hour light, shallow depth of field, handheld camera, realistic textures…">${esc(p.prePrompt)}</textarea>
+        </label>
+        <label><span>Estilo enviado ao LTX <span class="muted small">${p.videoStyle?.text && p.videoStyle.from === p.prePrompt ? (p.videoStyle.by === "IA" ? "resumido pela IA a partir do pré-prompt" : "editado por você") : "a IA resume o pré-prompt na próxima geração"}</span></span>
+          <textarea data-bind="p.videoStyleEdit" rows="4" placeholder="A IA tira do pré-prompt as instruções gerais de movimento e cortes, que fazem o LTX duplicar e deformar os personagens; a energia entra nas ações de cada bloco.">${esc(p.videoStyle?.text && p.videoStyle.from === p.prePrompt ? p.videoStyle.text : "")}</textarea>
         </label>
         <label>Prompt negativo
           <textarea data-bind="p.negativePrompt" rows="2" placeholder="Ex.: blurry, distorted faces, text, watermark">${esc(p.negativePrompt)}</textarea>

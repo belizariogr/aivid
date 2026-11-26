@@ -1,5 +1,7 @@
 // Montagem dos prompts enviados ao LTX a partir do projeto, da cena e do bloco.
 
+import { videoStyleOf } from "./store.js";
+
 const clean = (s) => String(s || "").trim().replace(/\s+\n/g, "\n");
 const sentence = (s) => {
   const t = clean(s);
@@ -74,7 +76,7 @@ export function videoPrompt(project, scene, block, { mode, hasImage = false }) {
   const hint = mode === "storyboard" ? MODE_HINT.storyboard : mode === "continue" ? MODE_HINT.continue : mode === "frame" ? MODE_HINT.frame : hasImage ? MODE_HINT.image : "";
   // As notas do projeto ficam com as LLMs, que as aplicam ao escrever os prompts: no LTX, uma
   // lista de "nunca X" faz aparecer X (duas capivaras, fitas duplicadas) e alonga o prompt.
-  return [clean(project.prePrompt), setting(project, scene, block), current(block), cast(sceneCharacters(project, scene, block)), clean(block.prompt), hint]
+  return [clean(videoStyleOf(project)), setting(project, scene, block), current(block), cast(sceneCharacters(project, scene, block)), clean(block.prompt), hint]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -83,7 +85,7 @@ export function videoPrompt(project, scene, block, { mode, hasImage = false }) {
 export function keyframePrompt(project, scene, block) {
   const opening = clean(block.opening) || clean(block.prompt);
   return [
-    clean(project.prePrompt),
+    clean(videoStyleOf(project)),
     setting(project, scene, block),
     current(block),
     cast(sceneCharacters(project, scene, block)),

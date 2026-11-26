@@ -77,7 +77,8 @@ Tudo fica em `~/Library/Application Support/Takes/ai.json`, com permissão só d
 O cabeçalho do projeto tem as duas ações principais: **✦ Gerar cenas com IA** (veja "Roteiro com IA") e **▶ Gerar filme**. A aba Projeto mostra:
 
 - **Andamento**: blocos prontos, **Gerar pendentes**, **Gerar tudo de novo**, o último filme gerado e **Precisa de você**, agrupado por cena.
-- **Pré-prompt**: instruções gerais (estilo, época, lente, luz, regras) que entram antes de todo prompt de vídeo e imagem.
+- **Pré-prompt**: instruções gerais (estilo, época, lente, luz, ritmo, regras). A IA lê o pré-prompt inteiro ao escrever cada bloco.
+- **Estilo enviado ao LTX**: antes da primeira geração, a IA resume o pré-prompt numa linha de estilo (visual, luz, som) e tira as instruções gerais de movimento e de cortes ("hyper, they hop, spin and tumble", "snappy cuts"). Nos testes, essas instruções faziam o LTX duplicar e derreter os personagens no início de cada bloco e cortar dentro de planos contínuos. A energia do pré-prompt continua no filme, porque a IA a escreve como ações concretas de cada bloco. O resumo é refeito quando o pré-prompt muda, e dá para editá-lo à mão na aba Projeto.
 - **Prompt negativo**, resolução, proporção, FPS, seed, áudio, **contexto da continuação** (segundos do bloco anterior enviados ao LTX), **revisão de continuidade com IA**, **juiz com IA** e **retakes** (veja abaixo).
 - **Pasta de saída**: escolhida pelo seletor do macOS ou digitada.
 - **Novas tentativas**: se um bloco falhar (erro do LTX, conexão que caiu, FFmpeg), ele é gerado de novo até mais duas vezes, com pausas de 5 s e 15 s. Só depois da terceira falha a tarefa para com erro e **Retomar** continua do bloco que falhou. Erros que só você resolve (pasta de saída ausente, bloco anterior sem vídeo) param na hora.

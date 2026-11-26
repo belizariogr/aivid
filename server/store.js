@@ -195,6 +195,8 @@ export function newProject(name) {
     createdAt: t,
     updatedAt: t,
     prePrompt: "",
+    // Estilo para o LTX: o pré-prompt sem as instruções de movimento (ver videoStyleOf).
+    videoStyle: null,
     negativePrompt: "",
     outputDir: "",
     settings: defaultSettings(),
@@ -221,12 +223,24 @@ export function normalizeMemory(list, previous = []) {
     .slice(0, MAX_NOTES);
 }
 
+// Estilo que vai para o LTX e o gerador de imagens: o resumo do pré-prompt, enquanto ele valer
+// para o pré-prompt atual; senão, o próprio pré-prompt.
+export function videoStyleOf(project) {
+  const v = project.videoStyle;
+  return v?.text && v.from === project.prePrompt ? v.text : project.prePrompt ?? "";
+}
+
 // Aplica uma edição vinda da interface sem perder o que só o servidor controla
 // (fotos, imagens de fundo, prévias e takes gerados).
 export function mergeEdit(project, input) {
   const next = structuredClone(project);
   if ("name" in input) next.name = str(input.name, 200).trim() || project.name;
   if ("prePrompt" in input) next.prePrompt = str(input.prePrompt, 8000);
+  // Editado à mão: vale para o pré-prompt atual (vazio volta a deixar a IA resumir).
+  if ("videoStyle" in input) {
+    const text = str(typeof input.videoStyle === "string" ? input.videoStyle : input.videoStyle?.text, 4000).trim();
+    next.videoStyle = text ? { text, from: next.prePrompt, by: "você" } : null;
+  }
   if ("negativePrompt" in input) next.negativePrompt = str(input.negativePrompt, 2000);
   if ("outputDir" in input) next.outputDir = str(input.outputDir, 4000);
   if ("settings" in input) next.settings = normalizeSettings({ ...project.settings, ...input.settings });
@@ -257,6 +271,7 @@ export function migrateProject(project) {
   // Configurações novas (resolução do rascunho, aprendizados…) ganham o valor padrão.
   project.settings = normalizeSettings(project.settings ?? {});
   project.memory ??= [];
+  project.videoStyle ??= null;
   for (const scene of project.scenes ?? [])
     for (const block of scene.blocks ?? []) {
       if (!("state" in block)) continue;

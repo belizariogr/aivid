@@ -729,7 +729,28 @@ export class JobQueue {
     }
   }
 
+  // O pré-prompt vai ao LTX sem as instruções gerais de movimento: "hyper, hop, spin, tumble"
+  // faz o LTX duplicar e derreter os personagens no início de cada bloco. A IA resume o estilo
+  // uma vez por pré-prompt (de novo quando ele muda); a energia entra nas ações de cada bloco.
+  async ensureVideoStyle(job) {
+    const project = this.store.get(job.projectId);
+    const pre = (project.prePrompt ?? "").trim();
+    if (!pre || !this.reviewer?.videoStyle || project.videoStyle?.from === project.prePrompt) return;
+    job.phase = "A IA está preparando o estilo do pré-prompt para o LTX";
+    this.changed();
+    try {
+      const { style } = await this.reviewer.videoStyle({ project, signal: job.abort.signal });
+      this.store.update(job.projectId, (p) => {
+        if (p.prePrompt === project.prePrompt) p.videoStyle = { text: style, from: p.prePrompt, by: "IA" };
+      });
+    } catch (error) {
+      if (error.code === "ABORTED" || job.abort.signal.aborted) return;
+      (job.warnings ??= []).push(`Não deu para preparar o estilo do LTX (${error.message}); o pré-prompt foi inteiro.`);
+    }
+  }
+
   async renderBlockWithRetry(job, blockId, { retake = 0 } = {}) {
+    await this.ensureVideoStyle(job);
     const attempts = this.retryDelays.length + 1;
     for (let attempt = 1; ; attempt++) {
       const project = this.store.get(job.projectId);

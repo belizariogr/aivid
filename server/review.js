@@ -19,7 +19,7 @@ const MAX_CHARACTERS = 4;
 
 const MEMORY_RULES = `Project notes are short lessons for the AI that writes, checks and fixes the prompts (you and the other steps of Takes); they are listed with their ids. They are NOT sent to LTX or the image model: negations and long rule lists confuse those models (a note saying "never two capybaras" makes them draw two). Whenever you write a prompt or a description, apply the notes that matter for it by stating the right thing positively and briefly (for example "Teca, a big cinnamon-brown capybara in olive-green overalls" instead of "not a hamster"). With "memory" you may add a note when you learned something that applies to the whole project and will prevent the same failure in other blocks: how a character must look so LTX does not get it wrong (for example "Teca is a capybara with a broad brown snout and small round ears, never a hamster or a guinea pig"), wording LTX misreads, a recurring artifact to avoid. Never add actions, states or framing of a single block. Keep each note under 30 words, in English, and do not repeat what the pre-prompt or an existing note already says. Remove a note by id when it is wrong or no longer useful. Most of the time, leave "memory" out.`;
 
-const STYLE = `"prompt" follows the same style as the plan: English, one paragraph of 3 to 7 sentences, present tense, no lists, no block numbers; the project pre-prompt, setting description, "state" and character descriptions are added automatically.`;
+const STYLE = `"prompt" follows the same style as the plan: English, one paragraph of 3 to 7 sentences, present tense, no lists, no block numbers; the style line of the project pre-prompt, setting description, "state" and character descriptions are added automatically. LTX does not get the pre-prompt's general instructions about motion, energy or camera: when the pre-prompt asks for lively characters, write that liveliness as concrete, readable actions of this block (who moves, how, in what order), one clear action at a time.`;
 
 const REVIEW_SYSTEM = `You are the continuity supervisor of a video made with LTX, a local text/image-to-video model, inside the Takes app. A scene is split into blocks of at most 20 seconds that LTX renders one at a time. LTX is about to render the next block. You see what LTX ACTUALLY rendered so far (the last frame of earlier blocks), which may differ from the plan: an action may not have happened, the camera may have ended closer or wider than planned, an object may be in a different state.
 
@@ -105,6 +105,13 @@ ${MEMORY_RULES}
 
 Reply with ONLY a JSON object, no text before or after it:
 {"pass": true or false, "score": 1 to 10 (how good a frame it is for the film; 8 or more passes), "problems": ["each problem in Brazilian Portuguese"], "reason": "one sentence in Brazilian Portuguese", "description": "rewritten English description (only when failing)", "prompt": "corrected block prompt (optional)", "memory": {"add": [], "remove": []} (optional)}`;
+
+const STYLE_SYSTEM = `You prepare the style line of a video made with LTX, a local text/image-to-video model, inside the Takes app. The project pre-prompt below is written by the author and goes, in front of every block prompt, to LTX and to the image model. Tested on this machine: general instructions about motion and energy in it ("hyper", "they hop, zip, spin, tumble and bounce", "never slow or stiff", "snappy cuts", "dynamic camera") make LTX invent jumps and spins at the start of every block, duplicate and melt the characters, and cut inside shots that must be continuous.
+
+Rewrite it as the style line LTX should get: keep everything about the look (medium, materials, world, colors, light, lens, rendering quality, audience), the sound (music, kinds of sounds, no spoken words) and anything else that is not motion; drop the general motion, energy, pacing and camera-cut instructions. Those are not lost: the AI that writes each block prompt still reads the full pre-prompt and puts the energy into concrete actions of the block. You may keep a short neutral phrase such as "smooth, expressive animation". Keep the author's wording where you can, in English, at most 90 words.
+
+Reply with ONLY a JSON object, no text before or after it:
+{"style": "the style line"}`;
 
 const fail = (message) => Object.assign(new Error(message), { status: 422 });
 
@@ -508,6 +515,20 @@ export class ContinuityReviewer {
           problems: Array.isArray(data.problems) ? data.problems.filter((p) => typeof p === "string").map((p) => p.trim()) : [],
           reason: text(data.reason),
         };
+      },
+      signal,
+    );
+  }
+
+  // Estilo para o LTX: o pré-prompt sem as instruções gerais de movimento e de cortes.
+  async videoStyle({ project, signal }) {
+    return this.askJson(
+      STYLE_SYSTEM,
+      [{ text: `Project pre-prompt:\n${project.prePrompt}\n\nReply with the JSON now.` }],
+      (data) => {
+        const style = text(data.style);
+        if (!style) throw fail('"style" vazio.');
+        return { style: style.slice(0, 1200) };
       },
       signal,
     );
