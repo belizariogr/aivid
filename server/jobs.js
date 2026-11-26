@@ -483,7 +483,10 @@ export class JobQueue {
           if (p.id && p.id !== job.ltxBefore) job.ltxGenerationId = p.id;
           job.stepProgress = p.progress;
           job.remainingSeconds = p.remainingSeconds ?? null;
-          if (!stalled && Date.now() - lastChange > this.stallMs) await stall(`O LTX travou em ${p.progress ?? 0}% (${Math.round(this.stallMs / 60_000)} min sem avançar)`);
+          // Gerações longas (uma continuação com 40 s de contexto leva ~50 min) passam muitos
+          // minutos num passo só, sobretudo no último, que monta o vídeo: o prazo cresce com a estimativa.
+          const limit = Math.max(this.stallMs, (p.estimate?.seconds ?? 0) * 1000 * 0.75);
+          if (!stalled && Date.now() - lastChange > limit) await stall(`O LTX travou em ${p.progress ?? 0}% (${Math.round(limit / 60_000)} min sem avançar)`);
           else if (stalled && Date.now() - stalledAt > this.foreignGraceMs) this.restartLtx(job, `${stalled} e não parou`).catch(() => {});
           else this.changed();
         }
