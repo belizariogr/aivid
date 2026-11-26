@@ -79,18 +79,21 @@ const DRAFT_NOTE = (resolution) =>
 
 const STORYBOARD_SYSTEM = `You are the storyboard artist of a video made with LTX, a local text/image-to-video model, inside the Takes app. Before any video is rendered, an image model draws a few still frames of every block; LTX then renders the block passing exactly through those frames (they are pinned keyframes). The frames decide what the video shows, so they must be precise and consistent.
 
-For every block listed, write one description per frame time it asks for. A frame marked "shared" is the last frame of the previous block and is not yours to describe. Each description is one English paragraph for a single still image: the framing (shot size, angle, lens), where each character is in the frame (left, right, foreground, background) with pose, gesture and expression, the objects that matter and their visible state, and the light. Name the characters; their looks are added automatically from the project and the project notes, so do not repeat them, and follow the notes. Consecutive frames must be the same place and the same characters, with positions that change plausibly within the seconds between them; a "cut" block may change the angle but keeps the place, the moment and the state.
+For every block listed, write one description per frame time it asks for. A frame marked "shared" is the last frame of the previous block and is not yours to describe. Each description is the COMPLETE prompt the image model receives, nothing is added to it, and the image model breaks down with long prompts: write at most 90 words (about 600 characters), plain and concrete, in this order: the style in a few words (from the pre-prompt, e.g. "3D animated children's film still, cardboard village"), the framing (shot size, angle), each character with their essential look (species, colors, outfit, from the project characters and notes) and their position, pose and expression, the objects that matter and their visible state, and the light. Do not use negations or lists of things to avoid. Consecutive frames must be the same place and the same characters, with positions that change plausibly within the seconds between them; a "cut" block may change the angle but keeps the place, the moment and the state.
 
 You may also rewrite a block's "prompt" so the motion it describes goes from frame to frame in order (English, one paragraph of 3 to 7 sentences, present tense). Keep the story, the dialogue and the characters of the block.
 
 Reply with ONLY a JSON object, no text before or after it:
 {"blocks": [{"block": 1, "prompt": "optional rewritten prompt, or omit", "frames": [{"at": 0, "description": "..."}, {"at": 10, "description": "..."}]}]}`;
 
+// O Z-Image se perde com prompts longos (personagens duplicados, colagens): ~90 palavras no máximo.
+const FRAME_MAX_CHARS = 700;
+
 const FRAME_SYSTEM = `You check one storyboard frame of a video made with LTX inside the Takes app. An image model drew it; it will be pinned as a keyframe of the video, so whatever is wrong in it will be wrong in the film. You see the frame, the previous frame of the storyboard (continuity), the background image of the place and reference photos of the characters.
 
 Pass the frame when it shows the described framing and action, the right characters looking like their references (species, colors, outfit, proportions), the place and the state described, nobody duplicated or deformed, no stray text, and it continues the previous frame plausibly. Small differences of detail pass.
 
-When it fails, rewrite the frame "description" so the next drawing gets it right: be more explicit about what went wrong (who is where, exact species and colors, what must not appear). If the block "prompt" contradicts the frames, give a corrected "prompt" too.
+When it fails, rewrite the frame "description" so the next drawing gets it right. The description is the complete prompt of the image model, which breaks down with long prompts: keep it at most 90 words (about 600 characters), plain and concrete (style in a few words, framing, each character with species, colors and outfit, position and pose, objects and state, light), and fix what went wrong by stating clearly what must be there; avoid long lists of things that must not appear. If the block "prompt" contradicts the frames, give a corrected "prompt" too.
 
 ${MEMORY_RULES}
 
@@ -339,6 +342,8 @@ export class ContinuityReviewer {
           const frames = (Array.isArray(b.frames) ? b.frames : []).map((f) => ({ at: Number(f.at), description: text(f.description) }));
           for (const want of layout[index].filter((f) => !f.shared))
             if (!frames.some((f) => Math.abs(f.at - want.at) < 0.5 && f.description)) errors.push(`bloco ${index + 1}: falta a descrição do quadro em ${want.at} s`);
+          for (const f of frames)
+            if (f.description.length > FRAME_MAX_CHARS) errors.push(`bloco ${index + 1}, quadro em ${f.at} s: descrição com ${f.description.length} caracteres; o limite é ${FRAME_MAX_CHARS} (cerca de 90 palavras)`);
           return { index, prompt: text(b.prompt) || null, frames };
         });
         if (errors.length) throw Object.assign(fail(errors.join("; ")), { details: errors });
@@ -377,7 +382,7 @@ export class ContinuityReviewer {
           pass: data.pass,
           problems: Array.isArray(data.problems) ? data.problems.filter((p) => typeof p === "string") : [],
           reason: text(data.reason),
-          description: data.pass ? null : text(data.description) || null,
+          description: data.pass ? null : text(data.description).slice(0, FRAME_MAX_CHARS + 200) || null,
           prompt: text(data.prompt) || null,
           memory: readMemory(project, data.memory),
         };

@@ -97,19 +97,11 @@ export function keyframePrompt(project, scene, block) {
     .join("\n\n");
 }
 
-// Quadro do storyboard: uma imagem estática do plano, que depois vira keyframe do vídeo.
+// Quadro do storyboard: a descrição escrita pela IA já é o prompt completo e curto da imagem.
+// O Z-Image se perde com prompts longos (personagens duplicados, colagens com glitch), então
+// nada do pré-prompt, do cenário ou do elenco é empilhado aqui: a IA já trouxe o essencial.
 export function framePrompt(project, scene, block, frame) {
-  return [
-    clean(project.prePrompt),
-    notes(project),
-    setting(project, scene, block),
-    current(block),
-    cast(sceneCharacters(project, scene, block)),
-    clean(frame.description),
-    "Single still frame from a film shot, cinematic composition, sharp, no motion blur, no text, no split screen.",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  return clean(frame.description);
 }
 
 // Imagens do storyboard na resolução nativa do Z-Image Turbo (~1 megapixel, 1344×768 em 16:9).
