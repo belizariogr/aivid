@@ -30,7 +30,7 @@ export function clampDuration(value) {
 }
 
 export function defaultSettings() {
-  return { resolution: "720p", aspectRatio: "16:9", fps: 24, seed: null, audio: false, contextSeconds: 2, review: false, judge: false, retakes: 2 };
+  return { resolution: "720p", draftResolution: "360p", aspectRatio: "16:9", fps: 24, seed: null, audio: false, contextSeconds: 2, review: false, judge: false, retakes: 2, learn: true };
 }
 
 export function normalizeSettings(s = {}) {
@@ -38,6 +38,8 @@ export function normalizeSettings(s = {}) {
   const seed = s.seed === null || s.seed === "" || s.seed === undefined ? null : Math.trunc(Number(s.seed));
   return {
     resolution: pick(s.resolution, RESOLUTIONS, d.resolution),
+    // Resolução do rascunho: baixa, para acertar prompts e aberturas antes da versão final.
+    draftResolution: pick(s.draftResolution, RESOLUTIONS, d.draftResolution),
     aspectRatio: pick(s.aspectRatio, ASPECTS, d.aspectRatio),
     fps: pick(Number(s.fps), FPS, d.fps),
     seed: Number.isFinite(seed) && seed >= 0 ? seed % 2147483647 : null,
@@ -48,6 +50,8 @@ export function normalizeSettings(s = {}) {
     // Juiz depois de cada bloco: reprovado, gera outro take até `retakes` vezes e fica com o melhor.
     judge: Boolean(s.judge),
     retakes: Math.min(MAX_RETAKES, Math.max(0, Math.round(Number(s.retakes ?? d.retakes)) || 0)),
+    // A revisão e o ajuste antes do retake podem anotar aprendizados que valem para todo o projeto.
+    learn: s.learn === undefined ? d.learn : Boolean(s.learn),
   };
 }
 
@@ -144,7 +148,23 @@ export function newProject(name) {
     backgrounds: [],
     previews: [],
     scenes: [],
+    memory: [],
   };
+}
+
+// Aprendizados do projeto: notas curtas (em inglês) que entram em todo prompt de vídeo e imagem.
+export const MAX_NOTES = 15;
+export function normalizeMemory(list, previous = []) {
+  const old = new Map(previous.map((n) => [n.id, n]));
+  return (Array.isArray(list) ? list : [])
+    .map((n) => {
+      const text = str(typeof n === "string" ? n : n?.text, 400).trim();
+      if (!text) return null;
+      const before = old.get(n?.id);
+      return { id: before?.id ?? (typeof n?.id === "string" && n.id ? n.id : newId()), text, at: before?.at ?? n?.at ?? now(), by: str(before?.by ?? n?.by ?? "você", 200) };
+    })
+    .filter(Boolean)
+    .slice(0, MAX_NOTES);
 }
 
 // Aplica uma edição vinda da interface sem perder o que só o servidor controla
@@ -156,6 +176,7 @@ export function mergeEdit(project, input) {
   if ("negativePrompt" in input) next.negativePrompt = str(input.negativePrompt, 2000);
   if ("outputDir" in input) next.outputDir = str(input.outputDir, 4000);
   if ("settings" in input) next.settings = normalizeSettings({ ...project.settings, ...input.settings });
+  if (Array.isArray(input.memory)) next.memory = normalizeMemory(input.memory, project.memory ?? []);
   if (Array.isArray(input.characters)) {
     const old = new Map(project.characters.map((c) => [c.id, c]));
     next.characters = input.characters.map((c) => normalizeCharacter(c, old.get(c?.id)));

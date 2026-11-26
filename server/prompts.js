@@ -49,6 +49,12 @@ function setting(project, scene, block = null) {
   return bg?.description ? `Setting: ${sentence(bg.description)}` : "";
 }
 
+// Aprendizados do projeto (escritos pela IA ou por você), logo depois do pré-prompt.
+function notes(project) {
+  const list = (project.memory ?? []).map((n) => sentence(n.text)).filter(Boolean);
+  return list.length ? `Project notes: ${list.join(" ")}` : "";
+}
+
 function current(block) {
   return clean(block?.currentState) ? `Current state: ${sentence(block.currentState)}` : "";
 }
@@ -68,7 +74,7 @@ const MODE_HINT = {
 
 export function videoPrompt(project, scene, block, { mode, hasImage = false }) {
   const hint = mode === "continue" ? MODE_HINT.continue : mode === "frame" ? MODE_HINT.frame : hasImage ? MODE_HINT.image : "";
-  return [clean(project.prePrompt), setting(project, scene, block), current(block), cast(sceneCharacters(project, scene, block)), clean(block.prompt), hint]
+  return [clean(project.prePrompt), notes(project), setting(project, scene, block), current(block), cast(sceneCharacters(project, scene, block)), clean(block.prompt), hint]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -78,6 +84,7 @@ export function keyframePrompt(project, scene, block) {
   const opening = clean(block.opening) || clean(block.prompt);
   return [
     clean(project.prePrompt),
+    notes(project),
     setting(project, scene, block),
     current(block),
     cast(sceneCharacters(project, scene, block)),
@@ -92,6 +99,7 @@ export function previewPrompt(project, scene, extra, { withCharacters = true } =
   const body = clean(extra) || clean(scene?.blocks?.[0]?.prompt) || clean(scene?.synopsis);
   return [
     clean(project.prePrompt),
+    notes(project),
     setting(project, scene),
     withCharacters ? cast(sceneCharacters(project, scene, null)) : "Empty environment with no people.",
     body,
@@ -122,6 +130,7 @@ export const REFERENCE_VIEWS = {
 export function referencePrompt(project, character, view) {
   return [
     clean(project.prePrompt),
+    notes(project),
     `Character reference sheet of ${describeCharacter(character)}`,
     REFERENCE_VIEWS[view].text,
     "Plain light gray background, even soft studio lighting, sharp focus, the same face, hair and outfit as the reference.",

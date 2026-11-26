@@ -291,12 +291,12 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
   });
 
   route("POST", "/api/projects/:id/scenes/:sid/generate", ({ id, sid, body }) =>
-    queue.addScene(id, sid, { from: Number(body.from) || 0, only: body.only || null, missing: Boolean(body.missing) }),
+    queue.addScene(id, sid, { from: Number(body.from) || 0, only: body.only || null, missing: Boolean(body.missing), quality: body.quality }),
   );
   // Do roteiro ao filme: gera o que falta em todas as cenas, une tudo e escreve o relatório.
-  route("POST", "/api/projects/:id/film", ({ id, body }) => queue.addFilm(id, { missing: body.missing !== false }));
+  route("POST", "/api/projects/:id/film", ({ id, body }) => queue.addFilm(id, { missing: body.missing !== false, quality: body.quality }));
   route("POST", "/api/projects/:id/characters/:cid/references", ({ id, cid }) => queue.addCharsheet(id, cid));
-  route("POST", "/api/projects/:id/generate-all", ({ id, body }) => queue.addAllScenes(id, { missing: Boolean(body.missing) }));
+  route("POST", "/api/projects/:id/generate-all", ({ id, body }) => queue.addAllScenes(id, { missing: Boolean(body.missing), quality: body.quality }));
   route("GET", "/api/projects/:id/scenes/:sid/playlist", ({ id, sid }) => {
     const project = store.get(id);
     const scene = findScene(project, sid);

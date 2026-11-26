@@ -32,6 +32,8 @@ export function buildBrief(project) {
     project: {
       name: project.name,
       prePrompt: project.prePrompt,
+      // Aprendizados de gerações anteriores; entram em todo prompt automaticamente.
+      notes: (project.memory ?? []).map((n) => n.text),
       video: { aspectRatio: project.settings.aspectRatio, fps: project.settings.fps, audio: project.settings.audio },
       characters: project.characters.map((c) => ({
         id: c.id,

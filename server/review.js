@@ -17,6 +17,8 @@ const MAX_BLOCK_FRAMES = 8;
 const MAX_BACKGROUNDS = 6;
 const MAX_CHARACTERS = 4;
 
+const MEMORY_RULES = `Project notes are short lessons that Takes adds to EVERY prompt of the project (videos and opening images), right after the pre-prompt; they are listed with their ids. With "memory" you may add a note when you learned something that applies to the whole project and will prevent the same failure in other blocks: how a character must look so LTX does not get it wrong (for example "Teca is a capybara with a broad brown snout and small round ears, never a hamster or a guinea pig"), wording LTX misreads, a recurring artifact to avoid. Never add actions, states or framing of a single block. Keep each note under 30 words, in English, and do not repeat what the pre-prompt or an existing note already says. Remove a note by id when it is wrong or no longer useful. Most of the time, leave "memory" out.`;
+
 const STYLE = `"prompt" follows the same style as the plan: English, one paragraph of 3 to 7 sentences, present tense, no lists, no block numbers; the project pre-prompt, setting description, "state" and character descriptions are added automatically.`;
 
 const REVIEW_SYSTEM = `You are the continuity supervisor of a video made with LTX, a local text/image-to-video model, inside the Takes app. A scene is split into blocks of at most 20 seconds that LTX renders one at a time. LTX is about to render the next block. You see what LTX ACTUALLY rendered so far (the last frame of earlier blocks), which may differ from the plan: an action may not have happened, the camera may have ended closer or wider than planned, an object may be in a different state.
@@ -30,8 +32,10 @@ Change only what is needed for continuity. Keep the block's story, action, dialo
 
 ${CONTINUITY_RULES}
 
+${MEMORY_RULES}
+
 Reply with ONLY a JSON object, no text before or after it:
-{"decision": "keep" or "change", "continuity": "continue" | "frame" | "cut", "start": "keyframe" | "block:N" | "scene" | "background:<id>" | "none" (only when "continuity" is "cut"; N must be an earlier block that was rendered), "reference": "scene" | "block:N" | "background:<id>" | "none" (only with "keyframe"), "opening": "English description of the first frame (only with keyframe)", "state": "current state in English, or empty", "prompt": "the full prompt of the block (unchanged when keeping)", "note": "continuity note for the editor, in Brazilian Portuguese", "reason": "one or two sentences in Brazilian Portuguese explaining what you saw and what you changed, or why the plan is fine"}`;
+{"decision": "keep" or "change", "memory": {"add": ["new note"], "remove": ["note id"]} (optional), "continuity": "continue" | "frame" | "cut", "start": "keyframe" | "block:N" | "scene" | "background:<id>" | "none" (only when "continuity" is "cut"; N must be an earlier block that was rendered), "reference": "scene" | "block:N" | "background:<id>" | "none" (only with "keyframe"), "opening": "English description of the first frame (only with keyframe)", "state": "current state in English, or empty", "prompt": "the full prompt of the block (unchanged when keeping)", "note": "continuity note for the editor, in Brazilian Portuguese", "reason": "one or two sentences in Brazilian Portuguese explaining what you saw and what you changed, or why the plan is fine"}`;
 
 const JUDGE_SYSTEM = `You are the quality judge of a video made with LTX, a local text/image-to-video model, inside the Takes app. LTX just rendered one block (at most 20 seconds) of a scene. You see frames of the rendered take in order (one every few seconds, then the last one), the last frame of the previous block, the opening image that was used, and reference photos of the characters.
 
@@ -64,8 +68,10 @@ Keep the block's story, dialogue, duration and characters. ${STYLE}
 
 ${CONTINUITY_RULES}
 
+${MEMORY_RULES} A rejected take is the best moment to learn: if the failure would repeat in other blocks (a character drawn as another animal, a misread word), add a note.
+
 Reply with ONLY a JSON object, no text before or after it:
-{"decision": "keep" or "change", "continuity": "continue" | "frame" | "cut", "start": "keyframe" | "block:N" | "scene" | "background:<id>" | "none" (only when "continuity" is "cut"), "reference": "scene" | "block:N" | "background:<id>" | "none" (only with "keyframe"), "opening": "English description of the first frame (only with keyframe)", "regenerateOpening": true or false, "state": "current state in English, or empty", "prompt": "the full prompt for the next take", "note": "continuity note for the editor, in Brazilian Portuguese", "reason": "one or two sentences in Brazilian Portuguese: what went wrong and what you changed"}`;
+{"decision": "keep" or "change", "memory": {"add": ["new note"], "remove": ["note id"]} (optional), "continuity": "continue" | "frame" | "cut", "start": "keyframe" | "block:N" | "scene" | "background:<id>" | "none" (only when "continuity" is "cut"), "reference": "scene" | "block:N" | "background:<id>" | "none" (only with "keyframe"), "opening": "English description of the first frame (only with keyframe)", "regenerateOpening": true or false, "state": "current state in English, or empty", "prompt": "the full prompt for the next take", "note": "continuity note for the editor, in Brazilian Portuguese", "reason": "one or two sentences in Brazilian Portuguese: what went wrong and what you changed"}`;
 
 const fail = (message) => Object.assign(new Error(message), { status: 422 });
 
@@ -83,6 +89,18 @@ function startLabel(scene, block) {
 
 async function jpeg(file) {
   return { mediaType: "image/jpeg", data: (await fsp.readFile(file)).toString("base64") };
+}
+
+// Notas a acrescentar (até 3, curtas) e ids existentes a retirar.
+function readMemory(project, memory) {
+  if (!memory || typeof memory !== "object") return { add: [], remove: [] };
+  const ids = new Set((project.memory ?? []).map((n) => n.id));
+  const add = (Array.isArray(memory.add) ? memory.add : [])
+    .filter((t) => typeof t === "string" && t.trim())
+    .map((t) => t.trim().slice(0, 300))
+    .slice(0, 3);
+  const remove = (Array.isArray(memory.remove) ? memory.remove : []).filter((id) => ids.has(id));
+  return { add, remove };
 }
 
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -138,6 +156,7 @@ export class ContinuityReviewer {
   projectText(project, scene) {
     return [
       `Project pre-prompt: ${project.prePrompt || "(none)"}`,
+      `Project notes: ${JSON.stringify((project.memory ?? []).map((n) => ({ id: n.id, text: n.text })))}`,
       `Characters: ${JSON.stringify(project.characters.map((c) => ({ id: c.id, name: c.name, appearance: c.appearance, wardrobe: c.wardrobe })))}`,
       `Backgrounds: ${JSON.stringify(project.backgrounds.map((b) => ({ id: b.id, name: b.name, description: b.description })))}`,
       `Scene "${scene.title}" background: ${scene.backgroundId ?? "(none)"}. Synopsis: ${scene.synopsis || "(none)"}`,
@@ -242,13 +261,14 @@ export class ContinuityReviewer {
       currentState: typeof data.state === "string" ? data.state.trim() : block.currentState || "",
       opening: start.kind === "keyframe" ? text(data.opening) || block.opening || "" : block.opening || "",
     };
+    const memory = readMemory(project, data.memory);
     const changed =
       next.continuity !== block.continuity ||
       next.prompt !== text(block.prompt) ||
       next.currentState !== (block.currentState || "") ||
       next.opening !== (block.opening || "") ||
       (continuity === "cut" && !same(next.start, block.start ?? { kind: "scene", id: null }));
-    return { changed, block: next, reason: text(data.reason) };
+    return { changed, block: next, reason: text(data.reason), memory };
   }
 
   async review({ project, scene, index, work, startImage = null, signal }) {

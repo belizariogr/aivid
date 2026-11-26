@@ -92,6 +92,7 @@ function saveNow() {
     characters: p.characters,
     backgrounds: p.backgrounds,
     scenes: p.scenes,
+    memory: p.memory ?? [],
   };
   pendingSaves++;
   saving = saving
@@ -117,6 +118,7 @@ function absorb(server) {
   for (const b of server.backgrounds) if (!local.backgrounds.some((x) => x.id === b.id)) local.backgrounds.push(b);
   local.previews = server.previews;
   local.attention = server.attention ?? [];
+  if (!document.activeElement?.dataset?.note) local.memory = server.memory ?? [];
   const sScenes = byId(server.scenes);
   for (const s of server.scenes) if (!local.scenes.some((x) => x.id === s.id)) local.scenes.push(s);
   for (const s of local.scenes) {
@@ -146,6 +148,7 @@ function ownedSignature(p) {
   return JSON.stringify([
     p.characters.map((c) => [c.id, c.photo, (c.refs ?? []).map((r) => r.file)]),
     (p.attention ?? []).length,
+    (p.memory ?? []).map((n) => n.id).join(","),
     p.backgrounds.map((b) => [b.id, b.image]),
     p.previews.map((x) => x.id),
     p.scenes.map((s) => [s.id, s.start, s.blocks.map((b) => [b.id, b.selectedTakeId, b.state, b.takes.length, b.review?.at, b.start?.id, b.takes.map((t) => t.judge?.at)])]),
@@ -293,13 +296,14 @@ function projectView() {
     return `<button class="tab ${state.tab === id ? "active" : ""}" data-action="tab" data-tab="${id}">${label}${badge ? ` <span class="badge">${badge}</span>` : ""}</button>`;
   }).join("");
   const body = { overview, characters, backgrounds, scenes, previews, queue }[state.tab]();
-  const film = state.jobs.some((j) => j.kind === "film" && j.projectId === p.id && ["queued", "running"].includes(j.status));
+  const film = state.jobs.find((j) => j.kind === "film" && j.projectId === p.id && ["queued", "running"].includes(j.status));
   return `<div class="project-head">
       <div class="project-title-row">
         <input class="title-input" data-bind="p.name" value="${esc(p.name)}" aria-label="Nome do projeto">
         <div class="head-actions">
           <button class="btn" data-action="open-llm" title="Cole o roteiro; a IA cria as cenas e os blocos e importa no projeto">✦ Gerar cenas com IA</button>
-          <button class="btn primary" data-action="generate-film" ${p.scenes.length && !film ? "" : "disabled"} title="Gera o que falta em todas as cenas, une o filme e escreve o relatório">${film ? "Filme na fila…" : "▶ Gerar filme"}</button>
+          <button class="btn primary" data-action="generate-film" data-quality="draft" ${p.scenes.length && !film ? "" : "disabled"} title="Gera em ${esc(p.settings.draftResolution ?? "360p")} o que falta em todas as cenas, com revisão e juiz, para acertar prompts e aberturas">${film?.quality === "draft" || (film && !film.quality) ? "Rascunho na fila…" : `▶ Gerar rascunho`}</button>
+          <button class="btn" data-action="generate-film" data-quality="final" ${p.scenes.length && !film ? "" : "disabled"} title="Gera de novo tudo em ${esc(p.settings.resolution)}, com os prompts e aberturas acertados no rascunho">${film?.quality === "final" ? "Final na fila…" : "★ Versão final"}</button>
         </div>
       </div>
       <div class="tabs">${tabs}</div>
@@ -322,7 +326,7 @@ function filmResult(p) {
   if (["queued", "running"].includes(job.status)) return `<p class="hint">Filme completo na fila: ${esc(job.phase || "")}</p>`;
   if (job.status !== "complete" || !job.result) return job.error ? `<pre class="error">${esc(job.error)}</pre>` : "";
   return `<div class="row film-result">
-      <span class="muted small">Último filme: ${job.result.blocks} blocos unidos${job.result.attention ? ` · ${job.result.attention} ponto(s) para revisar` : ""}</span>
+      <span class="muted small">${job.result.quality === "final" ? "Última versão final" : "Último rascunho"}: ${job.result.blocks} blocos unidos${job.result.lacking ? ` · ${job.result.lacking} sem vídeo` : ""}${job.result.attention ? ` · ${job.result.attention} ponto(s) para revisar` : ""}</span>
       ${job.result.file ? `<button class="btn small" data-action="reveal" data-path="${esc(job.result.file)}">Mostrar o filme</button>` : ""}
       <button class="btn small ghost" data-action="reveal" data-path="${esc(job.result.report)}">Relatório</button>
     </div>`;
@@ -350,7 +354,7 @@ function attentionPanel(p) {
       return `<li>
           <div class="att-scene">${link(g.items[0], `Cena ${g.scene}`)} <span class="muted">${esc(g.title)}</span></div>
           <div class="att-items">
-            ${problems.map((i) => `<div>${link(i, `Bloco ${i.block}`)} <span class="pill ${i.kind}">${ATTENTION_LABEL[i.kind].replace(/s$/, "").replace("pelo juiz", "")}</span> <small class="muted">${esc(i.kind === "judge" ? i.message : "")}</small></div>`).join("")}
+            ${problems.map((i) => `<div>${link(i, `Bloco ${i.block}`)} <span class="pill ${i.kind}">${ATTENTION_LABEL[i.kind].replace(/s$/, "").replace("pelo juiz", "")}</span> <small class="muted" title="${esc(i.kind === "judge" ? i.message : "")}">${esc(i.kind === "judge" ? (i.message.length > 140 ? `${i.message.slice(0, 140)}…` : i.message) : "")}</small></div>`).join("")}
             ${empty.length ? `<div class="muted small">${empty.length === g.items.length && empty.length > 1 ? "Nenhum bloco gerado" : `${empty.length === 1 ? "Bloco" : "Blocos"} ${empty.map((i) => i.block).join(", ")} não ${empty.length === 1 ? "gerado" : "gerados"}`}</div>` : ""}
           </div>
         </li>`;
@@ -358,6 +362,30 @@ function attentionPanel(p) {
     .join("");
   return `<div class="att-counts">${counts.map(([kind, label, n]) => `<span class="pill ${kind}">${n} ${label}</span>`).join("")}</div>
     <ul class="attention-list">${rows}</ul>`;
+}
+
+function memoryCard(p) {
+  const notes = p.memory ?? [];
+  return `<section class="card memory">
+      <div class="section-head">
+        <h3>Aprendizados da IA <span class="muted small">${notes.length}/15</span></h3>
+        <button class="btn small" data-action="add-note">＋ Nota</button>
+      </div>
+      <p class="hint">Notas curtas (em inglês) que entram em todo prompt de vídeo e de imagem, logo depois do pré-prompt. A revisão e o ajuste antes do retake anotam aqui o que aprenderam e vale para o projeto todo.</p>
+      <label class="check"><input type="checkbox" data-bind="p.settings.learn" ${p.settings.learn !== false ? "checked" : ""}> Deixar a IA anotar aprendizados</label>
+      ${
+        notes.length
+          ? `<ul class="notes">${notes
+              .map(
+                (n) => `<li>
+                <textarea rows="2" data-note="${n.id}">${esc(n.text)}</textarea>
+                <div class="row"><small class="muted grow">${esc(n.by || "")} · ${new Date(n.at).toLocaleString("pt-BR")}</small><button class="btn icon danger" data-action="delete-note" data-id="${n.id}" title="Apagar nota">✕</button></div>
+              </li>`,
+              )
+              .join("")}</ul>`
+          : `<p class="muted small">Nenhuma nota ainda.</p>`
+      }
+    </section>`;
 }
 
 function overview() {
@@ -404,14 +432,15 @@ function overview() {
           </div>
         </label>
         <div class="form-grid">
-          <label>Resolução<select data-bind="p.settings.resolution">${["360p", "540p", "720p", "1080p"].map((r) => option(r, r, s.resolution)).join("")}</select></label>
+          <label>Resolução final<select data-bind="p.settings.resolution">${["360p", "540p", "720p", "1080p"].map((r) => option(r, r, s.resolution)).join("")}</select></label>
+          <label title="Resolução do rascunho: gere em baixa para acertar prompts e aberturas antes da versão final">Resolução do rascunho<select data-bind="p.settings.draftResolution">${["360p", "540p", "720p", "1080p"].map((r) => option(r, r, s.draftResolution ?? "360p")).join("")}</select></label>
           <label>Proporção<select data-bind="p.settings.aspectRatio">${["16:9", "9:16", "1:1", "4:3", "3:2", "4:5", "21:9"].map((r) => option(r, r, s.aspectRatio)).join("")}</select></label>
           <label>FPS<select data-bind="p.settings.fps" data-type="number">${[24, 25, 48, 50].map((r) => option(r, r, s.fps)).join("")}</select></label>
           <label>Seed<input data-bind="p.settings.seed" data-type="number" type="number" min="0" value="${s.seed ?? ""}" placeholder="aleatória"></label>
           <label title="Quantos segundos do fim do bloco anterior o LTX recebe para continuar o movimento">Contexto da continuação<select data-bind="p.settings.contextSeconds" data-type="number">${[1, 2, 3, 4, 5].map((r) => option(r, `${r} s`, s.contextSeconds)).join("")}</select></label>
           <label class="check"><input type="checkbox" data-bind="p.settings.audio" ${s.audio ? "checked" : ""}> Gerar áudio</label>
         </div>
-        <p class="hint">Mude antes de gerar: os blocos de continuação herdam a resolução do bloco anterior.</p>
+        <p class="hint">O <strong>rascunho</strong> (botões de gerar, cena e bloco) usa a resolução do rascunho. A <strong>★ versão final</strong> gera tudo de novo na resolução final, com o plano congelado.</p>
       </section>
 
       <section class="card">
@@ -421,6 +450,8 @@ function overview() {
         <label class="check" title="Depois de cada bloco, a LLM confere o take; se reprovar, o Takes gera outro e fica com o melhor."><input type="checkbox" data-bind="p.settings.judge" data-rerender="1" ${s.judge ? "checked" : ""}> Juiz depois de cada bloco</label>
         ${s.judge ? `<label class="inline indent">Retakes se reprovar <select data-bind="p.settings.retakes" data-type="number">${[0, 1, 2, 3].map((r) => option(r, r === 0 ? "nenhum" : `até ${r}`, s.retakes)).join("")}</select></label>` : ""}
       </section>
+
+      ${memoryCard(p)}
 
       <section class="card">
         <h3>Projeto</h3>
@@ -784,7 +815,7 @@ function blockCard(scene, b, i, t, running) {
         <div class="take-actions">
           ${
             b.takes.length > 1
-              ? `<select data-change="select-take" data-scene="${scene.id}" data-id="${b.id}" title="Take usado na cena">${b.takes.map((x, n) => option(x.id, `Take ${n + 1}${x.judge ? ` · ${x.judge.score}/10${x.judge.pass ? "" : " ✗"}` : ""}`, b.selectedTakeId)).join("")}</select>`
+              ? `<select data-change="select-take" data-scene="${scene.id}" data-id="${b.id}" title="Take usado na cena">${b.takes.map((x, n) => option(x.id, `${x.quality === "final" ? "★ Final" : "Take"} ${n + 1}${x.resolution ? ` · ${x.resolution}` : ""}${x.judge ? ` · ${x.judge.score}/10${x.judge.pass ? "" : " ✗"}` : ""}`, b.selectedTakeId)).join("")}</select>`
               : ""
           }
           <button class="btn small ${take ? "" : "primary"}" data-action="generate-block" data-id="${b.id}" ${running ? "disabled" : ""}>${take ? "Gerar outro take" : "Gerar"}</button>
@@ -969,7 +1000,8 @@ function modelOptions(current, { inherit = null } = {}) {
   const groups = configured
     .map((p) => {
       const list = a.models.filter((m) => m.provider === p.id);
-      return list.length ? `<optgroup label="${esc(p.name)}">${list.map((m) => option(`${m.provider}:${m.id}`, m.name, current)).join("")}</optgroup>` : "";
+      const short = p.name.replace(/\s*\(.*\)$/, "");
+      return list.length ? `<optgroup label="${esc(p.name)}">${list.map((m) => option(`${m.provider}:${m.id}`, `${m.name} · ${short}`, current)).join("")}</optgroup>` : "";
     })
     .join("");
   return `${option("", inherit ?? "Escolha o modelo…", current)}${groups}`;
@@ -1097,7 +1129,8 @@ function settingsModal(m) {
         <h3>Padrões de um projeto novo</h3>
         <p class="hint">Valem para os próximos projetos criados. Cada projeto muda os seus na aba Projeto.</p>
         <div class="form-grid">
-          <label>Resolução<select data-default="resolution">${["360p", "540p", "720p", "1080p"].map((r) => option(r, r, d.resolution)).join("")}</select></label>
+          <label>Resolução do rascunho<select data-default="draftResolution">${["360p", "540p", "720p", "1080p"].map((r) => option(r, r, d.draftResolution ?? "360p")).join("")}</select></label>
+          <label>Resolução final<select data-default="resolution">${["360p", "540p", "720p", "1080p"].map((r) => option(r, r, d.resolution)).join("")}</select></label>
           <label>Proporção<select data-default="aspectRatio">${["16:9", "9:16", "1:1", "4:3", "3:2", "4:5", "21:9"].map((r) => option(r, r, d.aspectRatio)).join("")}</select></label>
           <label>FPS<select data-default="fps" data-type="number">${[24, 25, 48, 50].map((r) => option(r, r, d.fps)).join("")}</select></label>
           <label>Contexto da continuação<select data-default="contextSeconds" data-type="number">${[1, 2, 3, 4, 5].map((r) => option(r, `${r} s`, d.contextSeconds)).join("")}</select></label>
@@ -1107,6 +1140,7 @@ function settingsModal(m) {
           <label class="check"><input type="checkbox" data-default="audio" ${d.audio ? "checked" : ""}> Gerar áudio</label>
           <label class="check"><input type="checkbox" data-default="review" ${d.review ? "checked" : ""}> Revisar a continuidade</label>
           <label class="check"><input type="checkbox" data-default="judge" ${d.judge ? "checked" : ""}> Juiz depois de cada bloco</label>
+          <label class="check"><input type="checkbox" data-default="learn" ${d.learn !== false ? "checked" : ""}> IA anota aprendizados</label>
         </div>
       </section>
     </div>
@@ -1137,6 +1171,13 @@ document.addEventListener("input", (e) => {
   if (el.dataset.llm) state.llm[el.dataset.llm] = el.value;
   if (el.dataset.aiKey && state.modal?.type === "settings") state.modal.keys[el.dataset.aiKey] = el.value;
   if (el.dataset.pf) state.previewForm[el.dataset.pf] = el.value;
+  if (el.dataset.note && state.project) {
+    const note = state.project.memory?.find((n) => n.id === el.dataset.note);
+    if (note) {
+      note.text = el.value;
+      scheduleSave();
+    }
+  }
   if (el.dataset.focus === "avatar-prompt" && state.modal) state.modal.avatarPrompt = el.value;
   if (el.dataset.focus === "avatar-from" && state.modal) state.modal.fromPhoto = el.checked;
 });
@@ -1391,8 +1432,21 @@ const actions = {
   async "generate-missing"() {
     await generate({ missing: true });
   },
-  async "generate-film"() {
-    await generateFilm();
+  async "generate-film"({ quality }) {
+    if (quality === "final" && !confirm(`Gerar a versão final em ${state.project.settings.resolution}? Todos os blocos são gerados de novo com os prompts e aberturas atuais, sem revisão (o juiz continua, se estiver ligado).`)) return;
+    await generateFilm(quality || "draft");
+  },
+  async "add-note"() {
+    const text = prompt("Nota para todos os prompts (em inglês):", "");
+    if (!text?.trim()) return;
+    state.project.memory = [...(state.project.memory ?? []), { id: uid(), text: text.trim(), at: new Date().toISOString(), by: "você" }];
+    await saveNow();
+    render();
+  },
+  async "delete-note"({ id }) {
+    state.project.memory = (state.project.memory ?? []).filter((n) => n.id !== id);
+    await saveNow();
+    render();
   },
   "goto-block"({ scene, id }) {
     state.sceneId = scene;
@@ -1672,17 +1726,17 @@ async function generate(opts) {
   toast("Na fila de geração.");
 }
 
-async function generateFilm() {
+async function generateFilm(quality = "draft") {
   await saveNow();
   const p = state.project;
   if (!p.outputDir) {
     actions.tab({ tab: "overview" });
     return toast("Escolha a pasta de saída do projeto antes de gerar.", "error");
   }
-  const r = await api("POST", `/api/projects/${p.id}/film`, { missing: true });
+  const r = await api("POST", `/api/projects/${p.id}/film`, { missing: true, quality });
   actions.tab({ tab: "queue" });
   const skipped = r.skipped.length ? ` ${r.skipped.length} cena(s) sem nada pendente.` : "";
-  toast(`${r.added.length} cena(s) na fila; no fim o Takes une o filme e escreve o relatório.${skipped}`);
+  toast(`${quality === "final" ? "Versão final" : "Rascunho"}: ${r.added.length} cena(s) na fila; no fim o Takes une o filme e escreve o relatório.${skipped}`);
 }
 
 async function generateAll({ missing }) {

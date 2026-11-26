@@ -84,7 +84,7 @@ test("queues every scene of the project at once", async () => {
     });
     await s.call("POST", `/api/projects/${p.id}/import-script`, { text: script });
     const r = await (await s.call("POST", `/api/projects/${p.id}/generate-all`, {})).json();
-    assert.deepEqual(r.added.map((j) => j.title), ["Um — blocos 1–2", "Dois — bloco 1"]);
+    assert.deepEqual(r.added.map((j) => j.title), ["Rascunho · Um — blocos 1–2", "Rascunho · Dois — bloco 1"]);
     assert.deepEqual(r.added.map((j) => j.blockIds.length), [2, 1]);
   } finally {
     s.close();

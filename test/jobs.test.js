@@ -618,7 +618,7 @@ test("a scene can open from the last frame of the previous scene, and the film i
   assert.equal(blockState(project.scenes[1], 0, project), "ready");
   assert.equal((await media.probe(film.result.file)).frames, (2 + 2 + 3 + 2) * 24);
   assert.match(fs.readFileSync(film.result.report, "utf8"), /# Meu Filme/);
-  assert.ok(film.result.file.endsWith("meu-filme-filme.mp4"));
+  assert.ok(film.result.file.endsWith("meu-filme-rascunho.mp4"));
 
   // Refazer o último bloco da cena 1 deixa a abertura da cena 2 desatualizada.
   queue.addScene(p.id, "s1", { only: "a2" });
@@ -774,4 +774,93 @@ test("a generated opening waits for a reference that is not generated yet", { sk
   assert.equal(queue.jobs[0].status, "error");
   assert.match(queue.jobs[0].error, /ainda não foi gerada até o fim/);
   assert.equal(ltx.calls.length, 0, "não gera a abertura só pelo texto");
+});
+
+test("a draft in low resolution, then the final version with the plan frozen", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  const reviewed = [];
+  const reviewer = {
+    async review({ index }) {
+      reviewed.push(index);
+      return { changed: false, block: {}, reason: "ok", model: "Fake" };
+    },
+    async judge() {
+      return { pass: true, score: 8, problems: [], reason: "ok", model: "Fake" };
+    },
+  };
+  const queue = new JobQueue({ store, ltx, reviewer });
+  const p = store.create("Rascunho");
+  store.edit(p.id, {
+    outputDir: path.join(root, "out"),
+    settings: { resolution: "1080p", draftResolution: "360p", review: true, judge: true },
+    scenes: [{ id: "s", title: "Cena", blocks: [{ id: "a", prompt: "a", duration: 2 }, { id: "b", prompt: "b", duration: 2, continuity: "frame" }] }],
+  });
+  queue.addFilm(p.id, { quality: "draft" });
+  await waitIdle(queue);
+  assert.deepEqual(ltx.calls.map((c) => c[1].resolution), ["360p", "360p"]);
+  assert.deepEqual(reviewed, [1]);
+  const film = queue.jobs.find((j) => j.kind === "film");
+  assert.ok(film.result.file.endsWith("rascunho-rascunho.mp4"));
+
+  // A versão final regenera tudo em 1080p, sem revisão, partindo da versão final do bloco anterior.
+  const r = queue.addFilm(p.id, { quality: "final" });
+  assert.equal(r.added.length, 1, "o rascunho não conta como versão final");
+  await waitIdle(queue);
+  assert.deepEqual(ltx.calls.slice(2).map((c) => c[1].resolution), ["1080p", "1080p"]);
+  assert.deepEqual(reviewed, [1], "sem revisão na versão final");
+  const [a, b] = store.get(p.id).scenes[0].blocks;
+  assert.deepEqual(a.takes.map((t) => t.quality), ["draft", "final"]);
+  assert.ok(selectedTake(a).file.endsWith("bloco-01_final.mp4"));
+  assert.equal(selectedTake(b).basedOn, selectedTake(a).id);
+  const finalFilm = queue.jobs.filter((j) => j.kind === "film").at(-1);
+  assert.ok(finalFilm.result.file.endsWith("rascunho-filme.mp4"));
+  assert.equal(finalFilm.result.lacking, 0);
+});
+
+test("the AI writes project notes that go into every later prompt", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  let judged = 0;
+  const reviewer = {
+    async judge() {
+      judged++;
+      return judged === 1 ? { pass: false, score: 3, problems: ["Teca virou hamster."], reason: "personagem errado", model: "Fake" } : { pass: true, score: 8, problems: [], reason: "ok", model: "Fake" };
+    },
+    async revise({ scene, index }) {
+      const b = scene.blocks[index];
+      return { changed: false, block: { continuity: b.continuity, start: b.start, prompt: b.prompt, note: "", currentState: "", opening: "" }, reason: "sorte", model: "Fake", memory: { add: ["Teca is a capybara with a broad brown snout, never a hamster."], remove: [] } };
+    },
+    async review() {
+      return { changed: false, block: {}, reason: "ok", model: "Fake", memory: { add: ["Teca is a capybara with a broad brown snout, never a hamster."], remove: [] } };
+    },
+  };
+  const queue = new JobQueue({ store, ltx, reviewer });
+  const p = store.create("Notas");
+  store.edit(p.id, {
+    outputDir: path.join(root, "out"),
+    prePrompt: "Cardboard world",
+    settings: { judge: true, review: true, retakes: 1 },
+    scenes: [{ id: "s", title: "Cena", blocks: [{ id: "a", prompt: "a", duration: 2 }, { id: "b", prompt: "b", duration: 2, continuity: "frame" }] }],
+  });
+  queue.addScene(p.id, "s");
+  await waitIdle(queue);
+  assert.equal(queue.jobs[0].status, "complete", queue.jobs[0].error);
+  const memory = store.get(p.id).memory;
+  assert.equal(memory.length, 1, "a mesma nota não é repetida");
+  assert.match(memory[0].by, /take reprovado/);
+  // 1º take sem a nota; o retake e o bloco 2 já com ela, logo depois do pré-prompt.
+  const prompts = ltx.calls.map((c) => c[1].prompt);
+  assert.doesNotMatch(prompts[0], /Project notes/);
+  assert.match(prompts[1], /^Cardboard world\n\nProject notes: Teca is a capybara/);
+  assert.match(prompts[2], /Project notes: Teca is a capybara/);
+
+  // Com "learn" desligado, nada é anotado.
+  store.edit(p.id, { memory: [], settings: { learn: false } });
+  judged = 0;
+  queue.addScene(p.id, "s", { only: "a" });
+  await waitIdle(queue);
+  assert.equal(store.get(p.id).memory.length, 0);
 });

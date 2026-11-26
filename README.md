@@ -69,7 +69,7 @@ O Takes acha os programas em `~/.local/bin`, no Homebrew ou no PATH do shell de 
 
 O **modo rápido** vale só para o Claude Opus 5.5 e o Fable 5.2: responde mais rápido e custa o dobro. No Claude Code ele usa créditos de uso, fora do limite do plano. Se não estiver disponível, a chamada é refeita no modo normal e o Takes avisa.
 
-**Padrões de um projeto novo:** resolução, proporção, FPS, contexto da continuação, retakes, áudio, revisão e juiz.
+**Padrões de um projeto novo:** resoluções do rascunho e final, proporção, FPS, contexto da continuação, retakes, áudio, revisão, juiz e aprendizados.
 
 Tudo fica em `~/Library/Application Support/Takes/ai.json`, com permissão só do seu usuário. A interface nunca recebe a chave, só os últimos caracteres.
 
@@ -152,6 +152,25 @@ Antes de cada retake, a LLM recebe o que o juiz apontou, os quadros do take repr
 - muda a abertura ou pede uma imagem de abertura nova.
 
 Se a falha parecer só azar da geração, ela mantém o plano e o retake só troca a semente. A seed fixa muda a cada retake. O bloco mostra o ajuste e o motivo, com **Desfazer**. Se nenhum take passar, fica o de maior nota e o bloco entra em **Precisa de você**. O seletor de takes mostra a nota de cada um. Com o juiz ligado, as imagens de abertura geradas também são conferidas, e uma imagem recusada é gerada de novo uma vez.
+
+#### Rascunho e versão final
+
+Os botões de gerar (filme, cena, bloco) fazem o **rascunho**, na **resolução do rascunho** (padrão 360p), com revisão, juiz e ajustes para acertar os prompts, os estados e as aberturas. Isso sai bem mais rápido que na resolução final.
+
+Quando o rascunho estiver bom, **★ Versão final**, no cabeçalho do projeto, gera tudo de novo na **resolução final**:
+
+- os prompts e o plano ficam congelados: sem revisão e sem ajustes;
+- o juiz continua, se estiver ligado, e os retakes só trocam a semente;
+- as imagens de abertura aprovadas no rascunho são reaproveitadas;
+- cada bloco parte da versão final do bloco de origem;
+- os takes ficam como `bloco-NN_final.mp4` e o filme como `<projeto>-filme.mp4`. O rascunho unido é `<projeto>-rascunho.mp4`.
+
+#### Aprendizados da IA
+
+Notas curtas (em inglês) do projeto, que entram em todo prompt de vídeo e de imagem, logo depois do pré-prompt, e no pedido do roteiro. A revisão e o ajuste antes do retake podem acrescentar ou retirar notas quando aprendem algo que vale para o projeto todo, por exemplo: "Teca is a capybara with a broad brown snout, never a hamster". Também dá para:
+
+- ver, editar, apagar e acrescentar notas na aba Projeto (até 15);
+- desligar com **Deixar a IA anotar aprendizados**.
 
 #### Fichas de referência dos personagens
 
