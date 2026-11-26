@@ -36,9 +36,12 @@ codesign --force --deep --sign - "$APP" >/dev/null
 
 if [ "${1:-}" = "--install" ]; then
   DEST=/Applications/Takes.app
-  # Fecha o app aberto (ele pergunta se houver gerações em andamento).
+  # Fecha o app aberto sem perder nada: o servidor sai deixando o LTX terminar a geração atual
+  # (o Takes reaberto a recupera e segue a fila), e o app fecha sem o aviso de tarefas em andamento.
   if pgrep -f "Takes.app/Contents/MacOS/Takes" >/dev/null; then
-    osascript -e 'tell application id "com.belizariogr.takes" to quit' || true
+    curl -s --max-time 5 -X POST http://127.0.0.1:4477/api/shutdown -H "X-Takes: 1" -H "Content-Type: application/json" -d '{"cancel":false}' >/dev/null || true
+    for _ in $(seq 1 20); do pgrep -f "Takes.app/Contents/Resources/app/server/index.js" >/dev/null || break; sleep 0.5; done
+    osascript -e 'tell application id "com.belizariogr.takes" to quit' >/dev/null 2>&1 || true
     for _ in $(seq 1 40); do pgrep -f "Takes.app/Contents/MacOS/Takes" >/dev/null || break; sleep 0.5; done
   fi
   rm -rf "$DEST"
