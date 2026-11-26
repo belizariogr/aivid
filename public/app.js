@@ -138,6 +138,7 @@ function absorb(server) {
       if (x.review?.at && x.review.at !== b.review?.at) Object.assign(b, { review: x.review, continuity: x.continuity, start: x.start, prompt: x.prompt, note: x.note, currentState: x.currentState, opening: x.opening });
       // Os quadros do storyboard (imagens, conferência e descrições corrigidas) vêm do servidor.
       b.frames = x.frames ?? [];
+      b.plate = x.plate ?? null;
       if (x.prompt !== b.prompt && document.activeElement?.dataset?.bind !== `k.${s.id}.${b.id}.prompt`) b.prompt = x.prompt;
       // A imagem de abertura gerada é gravada pelo servidor.
       if (x.start?.kind === "keyframe" && b.start?.kind === "keyframe") b.start.id = x.start.id;
@@ -441,7 +442,7 @@ function overview() {
           <label>Proporção<select data-bind="p.settings.aspectRatio">${["16:9", "9:16", "1:1", "4:3", "3:2", "4:5", "21:9"].map((r) => option(r, r, s.aspectRatio)).join("")}</select></label>
           <label>FPS<select data-bind="p.settings.fps" data-type="number">${[24, 25, 48, 50].map((r) => option(r, r, s.fps)).join("")}</select></label>
           <label>Seed<input data-bind="p.settings.seed" data-type="number" type="number" min="0" value="${s.seed ?? ""}" placeholder="aleatória"></label>
-          <label title="Quantos segundos do fim do bloco anterior o LTX recebe para continuar o movimento">Contexto da continuação<select data-bind="p.settings.contextSeconds" data-type="number">${[1, 2, 3, 4, 5].map((r) => option(r, `${r} s`, s.contextSeconds)).join("")}</select></label>
+          <label title="Quanto do plano já gerado o LTX recebe para continuar a mesma ação sem corte">Contexto da continuação<select data-bind="p.settings.contextSeconds" data-type="number">${[2, 5, 10, 15, 20].map((r) => option(r, `${r} s`, s.contextSeconds)).join("")}</select></label>
           <label class="check"><input type="checkbox" data-bind="p.settings.audio" ${s.audio ? "checked" : ""}> Gerar áudio</label>
         </div>
         <p class="hint">O <strong>rascunho</strong> (botões de gerar, cena e bloco) usa a resolução do rascunho. A <strong>★ versão final</strong> gera tudo de novo na resolução final, com o plano congelado.</p>
@@ -867,9 +868,14 @@ function storyboard() {
                 </div>`;
             })
             .join("");
+          const plateFile = b.plate?.imageId ? p.previews.find((x) => x.id === b.plate.imageId)?.file : null;
+          const plate = b.plate
+            ? `<div class="frame plate" title="${esc(b.plate.description)}">${plateFile ? `<a href="${mediaUrl(plateFile, plateFile)}" target="_blank"><img src="${mediaUrl(plateFile, plateFile)}" alt=""></a>` : `<div class="placeholder">fundo a desenhar</div>`}<small><strong>Fundo do plano</strong></small><small class="frame-desc">${esc(b.plate.description)}</small></div>`
+            : "";
           return `<div class="sb-block">
+              ${i === 0 || b.continuity === "cut" ? `<div class="shot-mark">Plano ${sc.blocks.slice(0, i + 1).filter((x, k) => k === 0 || x.continuity === "cut").length}</div>` : ""}
               <div class="sb-block-head"><span class="block-num">${i + 1}</span> <small class="muted">${b.duration} s · ${i === 0 ? "abre a cena" : CONTINUITY_LABEL[b.continuity]}</small> <small class="sb-prompt" title="${esc(b.prompt)}">${esc(b.prompt)}</small></div>
-              <div class="frames">${frames || `<p class="muted small">Sem quadros ainda.</p>`}</div>
+              <div class="frames">${plate}${frames || `<p class="muted small">Sem quadros ainda.</p>`}</div>
             </div>`;
         })
         .join("");
@@ -889,7 +895,7 @@ function storyboard() {
       <div class="section-head">
         <div>
           <h3>Storyboard</h3>
-          <p class="hint">A IA descreve um quadro no início de cada bloco, um a cada ${s.frameEvery ?? 2} s e um no fim (no máximo 10 por bloco, o limite do LTX; acima disso ficam distribuídos por igual). O Z-Image desenha cada um (1344×768, a resolução nativa dele), partindo do anterior, e a IA confere e corrige até 3 vezes. Com o modo ligado, o vídeo de cada bloco passa exatamente por esses quadros, e os blocos se emendam pelo quadro em comum.</p>
+          <p class="hint">A cena é dividida em planos (ação contínua, sem corte). Para cada plano a IA cria o fundo ideal daquele ângulo, a partir do fundo da cena. Depois descreve um quadro no início de cada bloco, um a cada ${s.frameEvery ?? 2} s e um no fim (no máximo 10 por bloco, o limite do LTX; acima disso ficam distribuídos por igual). O Z-Image desenha cada um (1344×768, a resolução nativa dele), partindo do anterior, e a IA confere e corrige até 3 vezes. Com o modo ligado, o 1º bloco de cada plano passa exatamente pelos quadros, e os blocos seguintes do plano continuam o mesmo vídeo, com o plano já gerado como contexto.</p>
           <p class="hint">${all.length ? `${done} de ${all.length} quadros aprovados.` : "Nenhum quadro ainda."}${running ? ` · ${esc(running.phase || "")}` : ""}</p>
         </div>
         <button class="btn primary" data-action="storyboard-all" ${p.scenes.length && !jobs.length ? "" : "disabled"}>${jobs.length ? "Storyboard na fila…" : "🎞 Gerar storyboard"}</button>
@@ -1209,7 +1215,7 @@ function settingsModal(m) {
           <label>Resolução final<select data-default="resolution">${["360p", "540p", "720p", "1080p"].map((r) => option(r, r, d.resolution)).join("")}</select></label>
           <label>Proporção<select data-default="aspectRatio">${["16:9", "9:16", "1:1", "4:3", "3:2", "4:5", "21:9"].map((r) => option(r, r, d.aspectRatio)).join("")}</select></label>
           <label>FPS<select data-default="fps" data-type="number">${[24, 25, 48, 50].map((r) => option(r, r, d.fps)).join("")}</select></label>
-          <label>Contexto da continuação<select data-default="contextSeconds" data-type="number">${[1, 2, 3, 4, 5].map((r) => option(r, `${r} s`, d.contextSeconds)).join("")}</select></label>
+          <label>Contexto da continuação<select data-default="contextSeconds" data-type="number">${[2, 5, 10, 15, 20].map((r) => option(r, `${r} s`, d.contextSeconds)).join("")}</select></label>
           <label>Retakes se o juiz reprovar<select data-default="retakes" data-type="number">${[0, 1, 2, 3].map((r) => option(r, r === 0 ? "nenhum" : `até ${r}`, d.retakes)).join("")}</select></label>
         </div>
         <div class="row">

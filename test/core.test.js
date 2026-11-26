@@ -42,7 +42,7 @@ test("settings are validated", () => {
   assert.equal(s.resolution, "720p");
   assert.equal(s.fps, 25);
   assert.equal(s.seed, 12);
-  assert.equal(s.contextSeconds, 5);
+  assert.equal(s.contextSeconds, 20);
 });
 
 test("store persists and reloads projects", () => {

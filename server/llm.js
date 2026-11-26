@@ -4,7 +4,9 @@ import { normalizeScene, newId, CONTINUITY } from "./store.js";
 export const BRIEF_FORMAT = "takes.llm-brief";
 export const SCRIPT_FORMAT = "takes.scene-script";
 
-export const CONTINUITY_RULES = `How Takes chains blocks (continuity errors are the most common failure, so read this carefully):
+export const CONTINUITY_RULES = `Think in SHOTS. A shot is one continuous camera take of an action, with no cut: a character opens a gate, picks up a balloon behind it and turns to look at a friend is ONE shot even if it lasts 40 or 50 seconds. LTX renders at most 20 seconds at a time, so a long shot is split into consecutive blocks linked with "continue": Takes renders the first block and then extends the same video block after block, giving LTX the shot rendered so far as context, so the action stays coherent. Start a new shot (a "cut") only when the point of view really changes: another character, a reverse angle, a close-up, a new place or a jump in time. A new shot is rendered from scratch from its own opening. Use long shots for continuous actions and short ones for reactions; prefer "continue" over "frame".
+
+How Takes chains blocks (continuity errors are the most common failure, so read this carefully):
 - LTX has no memory between blocks. For each block it only receives the text prompt and ONE opening image (or, for "continue", the last seconds of the previous block). Anything that changed earlier (a door or gate opened, an object moved, picked up, tied or removed, wet clothes, lights turned on) is forgotten unless that opening image shows it or the text says it.
 - "continuity" of each block after the first:
   - "continue": LTX receives the last seconds of the previous block and keeps the motion going. The block starts in exactly the framing the previous block ENDS with. Best continuity; use it whenever the camera keeps rolling.

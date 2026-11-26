@@ -30,7 +30,7 @@ export function clampDuration(value) {
 }
 
 export function defaultSettings() {
-  return { resolution: "720p", draftResolution: "360p", aspectRatio: "16:9", fps: 24, seed: null, audio: false, contextSeconds: 2, review: false, judge: false, retakes: 2, learn: true, storyboard: false, frameEvery: 2 };
+  return { resolution: "720p", draftResolution: "360p", aspectRatio: "16:9", fps: 24, seed: null, audio: false, contextSeconds: 20, review: false, judge: false, retakes: 2, learn: true, storyboard: false, frameEvery: 2 };
 }
 
 export function normalizeSettings(s = {}) {
@@ -44,7 +44,8 @@ export function normalizeSettings(s = {}) {
     fps: pick(Number(s.fps), FPS, d.fps),
     seed: Number.isFinite(seed) && seed >= 0 ? seed % 2147483647 : null,
     audio: Boolean(s.audio),
-    contextSeconds: Math.min(5, Math.max(1, Number(s.contextSeconds) || d.contextSeconds)),
+    // Quanto do plano já gerado a continuação recebe (o LTX usa o que couber, no modo "long").
+    contextSeconds: Math.min(20, Math.max(1, Number(s.contextSeconds) || d.contextSeconds)),
     // Revisão de continuidade com IA antes de cada bloco (usa o modelo da revisão escolhido em Configurações).
     review: Boolean(s.review),
     // Juiz depois de cada bloco: reprovado, gera outro take até `retakes` vezes e fica com o melhor.
@@ -128,6 +129,13 @@ export function normalizeFrames(list, previous = []) {
   });
 }
 
+export function normalizePlate(plate, previous) {
+  if (!plate || typeof plate !== "object") return null;
+  const description = str(plate.description ?? previous?.description ?? "", 2000);
+  const keep = previous && previous.description === description;
+  return { description, imageId: keep ? previous.imageId ?? null : previous ? null : plate.imageId ?? null };
+}
+
 export function normalizeBlock(b = {}, previous) {
   const takes = previous?.takes ?? [];
   const selected = takes.some((t) => t.id === b.selectedTakeId) ? b.selectedTakeId : previous?.selectedTakeId ?? null;
@@ -149,6 +157,8 @@ export function normalizeBlock(b = {}, previous) {
     // Descrição do quadro de abertura, usada quando a abertura é gerada pelo Z-Image.
     opening: str(plan.opening, 4000),
     frames: normalizeFrames(b.frames ?? previous?.frames, previous?.frames),
+    // Fundo ideal do plano (só no 1º bloco de cada plano): o lugar vazio visto deste ângulo.
+    plate: normalizePlate(b.plate ?? previous?.plate, previous?.plate),
     review,
     characterIds: b.characterIds == null ? null : ids(b.characterIds),
     takes,
@@ -397,6 +407,13 @@ export function blockState(scene, index, project = null, seen = new Set()) {
   }
   if (!fs.existsSync(take.file)) return "missing";
   return "ready";
+}
+
+// Início do plano (sequência sem corte) a que o bloco pertence: o 1º bloco da cena ou o último corte.
+export function shotStart(scene, index) {
+  let i = index;
+  while (i > 0 && scene.blocks[i].continuity !== "cut") i--;
+  return i;
 }
 
 // Quadros do storyboard de um bloco com o arquivo de cada um. Um quadro compartilhado usa o

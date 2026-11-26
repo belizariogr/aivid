@@ -366,8 +366,8 @@ test("storyboard descriptions are short image prompts; a long one goes back to b
   const scene = { title: "Portão", blocks: [{ id: "a", prompt: "a", duration: 4, continuity: "cut" }] };
   const long = "word ".repeat(200).trim();
   const replies = [
-    JSON.stringify({ blocks: [{ block: 1, frames: [{ at: 0, description: long }, { at: 4, description: "short" }] }] }),
-    JSON.stringify({ blocks: [{ block: 1, frames: [{ at: 0, description: "3D cartoon still, wide shot, a capybara by the gate." }, { at: 4, description: "Close-up, the capybara smiles." }] }] }),
+    JSON.stringify({ blocks: [{ block: 1, plate: "Empty cardboard square.", frames: [{ at: 0, description: long }, { at: 4, description: "short" }] }] }),
+    JSON.stringify({ blocks: [{ block: 1, plate: "Empty cardboard square, wide shot.", frames: [{ at: 0, description: "3D cartoon still, wide shot, a capybara by the gate." }, { at: 4, description: "Close-up, the capybara smiles." }] }] }),
   ];
   const bodies = [];
   const reviewer = new ContinuityReviewer({
@@ -378,6 +378,7 @@ test("storyboard descriptions are short image prompts; a long one goes back to b
   });
   const r = await reviewer.planStoryboard({ project, scene, layout: [[{ at: 0, shared: false }, { at: 4, shared: false }]] });
   assert.equal(r.blocks[0].frames[0].description, "3D cartoon still, wide shot, a capybara by the gate.");
+  assert.equal(r.blocks[0].plate, "Empty cardboard square, wide shot.");
   assert.equal(bodies.length, 2);
   assert.match(JSON.stringify(bodies[1].messages.at(-1)), /limite é 700/);
   assert.match(bodies[0].system, /at most 90 words/);

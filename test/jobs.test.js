@@ -39,6 +39,7 @@ class FakeLtx {
   async extend(req) {
     this.calls.push(["extend", req]);
     const info = await media.probe(req.video_path);
+    req.context_frames = info.frames; // para os testes: quanto contexto o Takes mandou
     const extra = Math.ceil((req.duration * info.fps) / 8) * 8;
     const tail = path.join(this.dir, `tail-${++this.n}.mp4`);
     makeVideo(tail, extra, info.fps, "red");
@@ -875,6 +876,7 @@ test("storyboard: the AI describes frames, images are drawn and checked, and the
       return {
         blocks: layout.map((frames, index) => ({
           index,
+          plate: index === 0 ? "Empty cardboard square, wide shot." : null,
           prompt: index === 0 ? "Teca walks to the gate and opens it." : null,
           frames: frames.filter((f) => !f.shared).map((f) => ({ at: f.at, description: `frame ${index + 1} at ${f.at}` })),
         })),
@@ -906,15 +908,41 @@ test("storyboard: the AI describes frames, images are drawn and checked, and the
   assert.equal(scene.blocks[0].frames[2].description, "frame 1 at 12, the gate wide open");
   assert.deepEqual(checks, ["frame 1 at 0", "frame 1 at 5", "frame 1 at 12", "frame 1 at 12, the gate wide open", "frame 2 at 4"]);
   const images = ltx.calls.filter((c) => c[0] === "image").map((c) => c[1]);
-  assert.equal(images.length, 5, "4 quadros + 1 redesenho");
-  assert.deepEqual([images[0].width, images[0].height], [1344, 768]);
-  assert.ok(images[1].imagePath, "cada quadro parte do anterior");
+  assert.equal(images.length, 6, "fundo do plano + 4 quadros + 1 redesenho");
+  assert.equal(images[0].prompt, "Empty cardboard square, wide shot.");
+  assert.deepEqual([images[1].width, images[1].height], [1344, 768]);
+  assert.ok(images[1].imagePath.includes("fundo"), "o 1º quadro do plano parte do fundo do plano");
+  assert.ok(images[2].imagePath, "cada quadro parte do anterior");
+  assert.ok(store.get(p.id).scenes[0].blocks[0].plate.imageId);
+  // O 1º bloco do plano nasce dos quadros; o 2º (mesmo plano) continua o vídeo.
   const videos = ltx.calls.filter((c) => c[0] === "generate").map((c) => c[1]);
-  assert.equal(videos.length, 2);
+  assert.equal(videos.length, 1);
   assert.deepEqual(videos[0].keyframes.map((k) => k.frameIndex), [0, 120, 288]);
   assert.equal(videos[0].imagePath, undefined);
-  assert.deepEqual(videos[1].keyframes.map((k) => k.frameIndex), [0, 96]);
-  assert.equal(videos[1].keyframes[0].imagePath, videos[0].keyframes[2].imagePath, "os blocos se emendam pelo mesmo quadro");
   assert.match(videos[0].prompt, /attached keyframes/);
+  assert.equal(ltx.calls.filter((c) => c[0] === "extend").length, 1);
   assert.equal(selectedTake(scene.blocks[0]).mode, "storyboard");
+  assert.equal(selectedTake(scene.blocks[1]).mode, "continue");
+});
+
+test("a continuation gets the whole shot so far as context, not just the last seconds", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  const queue = new JobQueue({ store, ltx });
+  const p = store.create("Plano");
+  store.edit(p.id, {
+    outputDir: path.join(root, "out"),
+    settings: { contextSeconds: 20 },
+    scenes: [{ id: "s", title: "Plano", blocks: [{ id: "a", prompt: "a", duration: 4 }, { id: "b", prompt: "b", duration: 4, continuity: "continue" }, { id: "c", prompt: "c", duration: 3, continuity: "continue" }, { id: "d", prompt: "d", duration: 2, continuity: "cut" }, { id: "e", prompt: "e", duration: 2, continuity: "continue" }] }],
+  });
+  queue.addScene(p.id, "s");
+  await waitIdle(queue);
+  assert.equal(queue.jobs[0].status, "complete", queue.jobs[0].error);
+  const extends_ = ltx.calls.filter((c) => c[0] === "extend").map((c) => c[1]);
+  // Bloco 2 recebe o bloco 1 (4 s); bloco 3, os blocos 1 e 2 (8 s); depois do corte, só o novo plano (2 s).
+  const sent = extends_.map((r) => r.context_frames);
+  assert.deepEqual(sent, [89, 185, 41]); // alinhado a 8k+1 quadros, o que o LTX exige
+  const frames = await Promise.all(store.get(p.id).scenes[0].blocks.map(async (b) => (await media.probe(selectedTake(b).file)).frames));
+  assert.deepEqual(frames, [96, 96, 72, 48, 48]);
 });

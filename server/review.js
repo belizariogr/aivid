@@ -81,10 +81,12 @@ const STORYBOARD_SYSTEM = `You are the storyboard artist of a video made with LT
 
 For every block listed, write one description per frame time it asks for. A frame marked "shared" is the last frame of the previous block and is not yours to describe. Each description is the COMPLETE prompt the image model receives, nothing is added to it, and the image model breaks down with long prompts: write at most 90 words (about 600 characters), plain and concrete, in this order: the style in a few words (from the pre-prompt, e.g. "3D animated children's film still, cardboard village"), the framing (shot size, angle), each character with their essential look (species, colors, outfit, from the project characters and notes) and their position, pose and expression, the objects that matter and their visible state, and the light. Do not use negations or lists of things to avoid. Consecutive frames must be the same place and the same characters, with positions that change plausibly within the seconds between them; a "cut" block may change the angle but keeps the place, the moment and the state.
 
+For every block marked "shotStart" (the first block of a shot), also write "plate": the prompt of the EMPTY place seen from this shot's camera, with no characters, in the state the place is in at that moment (at most 90 words, same style rules). It is drawn from the project background image and every frame of the shot starts from it, so the place stays the same within the shot.
+
 You may also rewrite a block's "prompt" so the motion it describes goes from frame to frame in order (English, one paragraph of 3 to 7 sentences, present tense). Keep the story, the dialogue and the characters of the block.
 
 Reply with ONLY a JSON object, no text before or after it:
-{"blocks": [{"block": 1, "prompt": "optional rewritten prompt, or omit", "frames": [{"at": 0, "description": "..."}, {"at": 10, "description": "..."}]}]}`;
+{"blocks": [{"block": 1, "plate": "empty place for a shot start, or omit", "prompt": "optional rewritten prompt, or omit", "frames": [{"at": 0, "description": "..."}, {"at": 10, "description": "..."}]}]}`;
 
 // O Z-Image se perde com prompts longos (personagens duplicados, colagens): ~90 palavras no máximo.
 const FRAME_MAX_CHARS = 700;
@@ -316,6 +318,7 @@ export class ContinuityReviewer {
       block: i + 1,
       duration: b.duration,
       continuity: i === 0 ? "opens the scene" : b.continuity,
+      ...(i === 0 || b.continuity === "cut" ? { shotStart: true } : {}),
       state: b.currentState || "",
       prompt: b.prompt,
       frames: layout[i].map((f) => (f.shared ? { at: f.at, shared: true } : { at: f.at })),
@@ -346,7 +349,10 @@ export class ContinuityReviewer {
             if (!frames.some((f) => Math.abs(f.at - want.at) < 0.5 && f.description)) errors.push(`bloco ${index + 1}: falta a descrição do quadro em ${want.at} s`);
           for (const f of frames)
             if (f.description.length > FRAME_MAX_CHARS) errors.push(`bloco ${index + 1}, quadro em ${f.at} s: descrição com ${f.description.length} caracteres; o limite é ${FRAME_MAX_CHARS} (cerca de 90 palavras)`);
-          return { index, prompt: text(b.prompt) || null, frames };
+          const plate = text(b.plate);
+          if ((index === 0 || scene.blocks[index].continuity === "cut") && !plate) errors.push(`bloco ${index + 1}: falta o "plate" (fundo do plano)`);
+          if (plate.length > FRAME_MAX_CHARS) errors.push(`bloco ${index + 1}: "plate" com ${plate.length} caracteres; o limite é ${FRAME_MAX_CHARS}`);
+          return { index, prompt: text(b.prompt) || null, plate: plate || null, frames };
         });
         if (errors.length) throw Object.assign(fail(errors.join("; ")), { details: errors });
         return { blocks: blocks.filter(Boolean) };
@@ -473,9 +479,11 @@ export class ContinuityReviewer {
     if (prev) await m.image(`Last frame of the previous block (${index}):`, prev.file, { last: true });
     if (take.startImage) await m.image("Opening image used for this take:", take.startImage);
     await this.takeFrames(m, take, info, "Rendered take");
-    if (take.mode === "storyboard")
-      for (const f of storyboardFrames(project, scene, index).filter((x) => x.file))
-        await m.image(`Approved storyboard frame at ${f.at} s that the take had to pass through:`, f.file);
+    for (const f of storyboardFrames(project, scene, index).filter((x) => x.file))
+      await m.image(
+        take.mode === "storyboard" ? `Approved storyboard frame at ${f.at} s that the take had to pass through:` : `Storyboard frame planned for ${f.at} s (the take continues the shot, so it should look close to this):`,
+        f.file,
+      );
     await this.characterImages(m, project, scene, block);
     m.text("Judge the take now and reply with the JSON.");
     return this.askJson(

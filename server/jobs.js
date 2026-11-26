@@ -9,7 +9,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { newId, findScene, selectedTake, slug, blockState, MAX_NOTES, frameTimes, storyboardFrames } from "./store.js";
+import { newId, findScene, selectedTake, slug, blockState, MAX_NOTES, frameTimes, storyboardFrames, shotStart } from "./store.js";
 import { videoPrompt, previewPrompt, avatarPrompt, keyframePrompt, referencePrompt, framePrompt, STORYBOARD_SHORT_SIDE, REFERENCE_VIEWS, imageSize } from "./prompts.js";
 import { renderDuration } from "./ltx.js";
 import * as media from "./media.js";
@@ -845,10 +845,15 @@ export class JobQueue {
     const quality = job.quality ?? "draft";
     const resolution = quality === "final" ? s.resolution : s.draftResolution ?? s.resolution;
     const prev = index > 0 ? takeFor(scene.blocks[index - 1], quality) : null;
-    // Modo storyboard: o vídeo passa pelos quadros do storyboard (keyframes), sem extend.
+    // Modo storyboard: o 1º bloco de cada plano nasce dos quadros (keyframes); os blocos seguintes
+    // do mesmo plano continuam o vídeo (extend, com o plano já gerado como contexto) e os quadros
+    // servem de gabarito para o juiz. "Partir do último quadro" usa o último quadro real como
+    // primeiro keyframe.
+    const shotFirst = index === 0 || block.continuity === "cut";
     const board = s.storyboard ? storyboardFrames(project, scene, index) : [];
-    const useBoard = board.length >= 2 && board.every((f) => f.file);
-    if (s.storyboard && !useBoard) throw Object.assign(fatal(`O bloco ${index + 1} ainda não tem o storyboard completo. Gere o storyboard da cena antes do vídeo.`), { pending: true });
+    const boardReady = board.length >= 2 && board.every((f) => f.file);
+    if (s.storyboard && shotFirst && !boardReady) throw Object.assign(fatal(`O bloco ${index + 1} ainda não tem o storyboard completo. Gere o storyboard da cena antes do vídeo.`), { pending: true });
+    const useBoard = s.storyboard && boardReady && (shotFirst || (block.continuity === "frame" && prev));
     const mode = useBoard ? "storyboard" : index === 0 ? "start" : block.continuity;
     if ((mode === "continue" || mode === "frame") && !prev)
       throw fatal(`O bloco ${index} ainda não foi gerado${quality === "final" ? " na versão final" : ""}. Gere os blocos anteriores primeiro.`);
@@ -896,6 +901,12 @@ export class JobQueue {
       const renderDur = renderDuration(block.duration, allowed);
       const last = Math.floor((renderDur * s.fps) / 8) * 8;
       const used = new Set();
+      // Depois de "partir do último quadro", o 1º keyframe é o último quadro real do bloco anterior.
+      if (!shotFirst && prev) {
+        const last = path.join(work, `${base}-quadro-inicial.png`);
+        await this.media.extractFrame(prev.file, last, { which: "last", signal });
+        board[0] = { ...board[0], file: last };
+      }
       const keyframes = board.map((f) => {
         let at = Math.min(last, Math.round(Math.min(f.at, block.duration) * s.fps));
         while (used.has(at) && at > 0) at--;
@@ -920,10 +931,27 @@ export class JobQueue {
     } else if (mode === "continue") {
       job.phase = `${label}: preparando a continuação`;
       this.changed();
-      const info = await this.media.probe(prev.file);
-      inflight.contextFrames = this.media.latentFrames(Math.round(s.contextSeconds * info.fps), info.frames);
+      // Contexto: o fim do plano já gerado (os blocos anteriores do mesmo plano, até `contextSeconds`),
+      // para o LTX continuar vendo os personagens, o estado e o movimento, e não só os últimos 2 s.
+      const want = Number(s.contextSeconds) || 20;
+      const parts = [];
+      let seconds = 0;
+      for (let k = index - 1; k >= shotStart(scene, index) && seconds < want; k--) {
+        const t = k === index - 1 ? prev : takeFor(scene.blocks[k], quality);
+        if (!t || !fs.existsSync(t.file)) break;
+        parts.unshift(t.file);
+        seconds += Number(scene.blocks[k].duration) || 0;
+      }
+      let source = prev.file;
+      if (parts.length > 1) {
+        source = path.join(work, `${base}-plano.mp4`);
+        await this.media.concat(parts, source, { audio: s.audio, signal });
+      }
+      const info = await this.media.probe(source);
+      inflight.contextFrames = this.media.latentFrames(Math.round(want * info.fps), info.frames);
       inflight.contextFile = path.join(work, `${base}-contexto.mp4`);
-      await this.media.cutFrames(prev.file, inflight.contextFile, { startFrame: info.frames - inflight.contextFrames, count: inflight.contextFrames, fps: info.fps, signal });
+      await this.media.cutFrames(source, inflight.contextFile, { startFrame: info.frames - inflight.contextFrames, count: inflight.contextFrames, fps: info.fps, audio: s.audio && info.hasAudio, signal });
+      if (source !== prev.file) await fsp.rm(source, { force: true });
       inflight.request = { video_path: inflight.contextFile, duration: block.duration, prompt: videoPrompt(project, scene, block, { mode }), mode: "end" };
       result = await this.withLtx(job, `${label}: gerando continuação no LTX`, inflight, () => this.ltx.extend(inflight.request, { signal }));
     } else {
@@ -1228,6 +1256,8 @@ export class JobQueue {
         sc.blocks.forEach((b, i) => {
           const got = plan.blocks.find((x) => x.index === i);
           if (got?.prompt) b.prompt = got.prompt;
+          const shot = i === 0 || b.continuity === "cut";
+          b.plate = shot && got?.plate ? { description: got.plate, imageId: b.plate?.description === got.plate && !job.redo ? b.plate.imageId ?? null : null } : null;
           b.frames = layout[i].map((w) => {
             const old = (b.frames ?? []).find((f) => Math.abs(f.at - w.at) < 0.01);
             const description = w.shared ? "" : got?.frames.find((f) => Math.abs(f.at - w.at) < 0.5)?.description ?? old?.description ?? "";
@@ -1238,6 +1268,14 @@ export class JobQueue {
       });
       job.planned = true;
       this.changed();
+    }
+    // Fundos ideais dos planos, a partir do fundo original da cena.
+    project = this.store.get(job.projectId);
+    scene = findScene(project, job.sceneId);
+    for (const b of scene.blocks) {
+      if (job.cancelRequested) return;
+      if (b.plate?.description && !this.plateFile(project, b)) await this.drawPlate(job, b.id, `Storyboard de "${scene.title}" · fundo do plano do bloco ${scene.blocks.indexOf(b) + 1}`);
+      project = this.store.get(job.projectId);
     }
     // Imagens, na ordem do filme: cada quadro parte do anterior.
     project = this.store.get(job.projectId);
@@ -1258,11 +1296,39 @@ export class JobQueue {
     job.phase = `Storyboard de "${scene.title}" pronto`;
   }
 
-  // Imagem de referência do quadro: o quadro anterior (mesmo plano), a abertura da cena ou o fundo.
+  plateFile(project, block) {
+    const file = block?.plate?.imageId ? project.previews.find((p) => p.id === block.plate.imageId)?.file : null;
+    return file && fs.existsSync(file) ? file : null;
+  }
+
+  // Fundo ideal do plano: o lugar vazio deste ângulo, desenhado a partir do fundo original da cena.
+  async drawPlate(job, blockId, label) {
+    const project = this.store.get(job.projectId);
+    const scene = findScene(project, job.sceneId);
+    const index = scene.blocks.findIndex((b) => b.id === blockId);
+    const block = scene.blocks[index];
+    const bg = project.backgrounds.find((b) => b.id === scene.backgroundId)?.image;
+    const request = {
+      prompt: block.plate.description,
+      ...imageSize(project.settings.aspectRatio, STORYBOARD_SHORT_SIDE),
+      numImages: 1,
+      ...(bg && fs.existsSync(bg) ? { imagePath: bg, strength: 0.6 } : {}),
+    };
+    const inflight = { type: "frame", plate: true, request, blockId, frameId: null, index, at: 0, sceneTitle: scene.title };
+    const result = await this.withLtx(job, label, inflight, () => this.ltx.generateImage(request, { signal: job.abort.signal }));
+    if (job.cancelRequested || result?.status !== "complete") return;
+    if (!result.image_paths?.[0]) throw new Error("O LTX não devolveu o fundo do plano.");
+    await this.finish(job, result.image_paths[0]);
+  }
+
+  // Imagem de referência do quadro: o quadro anterior (mesmo plano), o fundo do plano ou o fundo.
   frameReference(project, scene, index, frameIndex) {
     const board = storyboardFrames(project, scene, index);
     const prev = frameIndex > 0 ? board[frameIndex - 1] : index > 0 ? storyboardFrames(project, scene, index - 1).at(-1) : null;
     const block = scene.blocks[index];
+    const plate = frameIndex === 0 ? this.plateFile(project, scene.blocks[shotStart(scene, index)]) : null;
+    // 1º quadro de um plano: parte do fundo ideal do plano (e não do quadro de outro ângulo).
+    if (plate && (index === 0 || block.continuity === "cut")) return { file: plate, strength: 0.75, prev: prev?.file ?? null };
     if (prev?.file) return { file: prev.file, strength: frameIndex === 0 && block.continuity === "cut" ? 0.85 : 0.6, prev: prev.file };
     if (index === 0 && scene.start?.kind === "previous") {
       const at = project.scenes.findIndex((x) => x.id === scene.id);
@@ -1347,13 +1413,18 @@ export class JobQueue {
     requireOutput(project);
     const dir = path.join(project.outputDir, "storyboard");
     await fsp.mkdir(dir, { recursive: true });
-    const file = path.join(dir, `${slug(inf.sceneTitle, "cena")}-bloco-${pad(inf.index + 1)}-${String(inf.at).replace(".", "_")}s-${stamp()}${path.extname(source) || ".png"}`);
+    const file = path.join(dir, `${slug(inf.sceneTitle, "cena")}-bloco-${pad(inf.index + 1)}-${inf.plate ? "fundo" : `${String(inf.at).replace(".", "_")}s`}-${stamp()}${path.extname(source) || ".png"}`);
     await fsp.copyFile(source, file);
-    const preview = { id: newId(), sceneId: job.sceneId, backgroundId: null, kind: "frame", blockId: inf.blockId, frameId: inf.frameId, prompt: inf.request.prompt, file, createdAt: new Date().toISOString() };
+    const preview = { id: newId(), sceneId: job.sceneId, backgroundId: null, kind: inf.plate ? "plate" : "frame", blockId: inf.blockId, frameId: inf.frameId, prompt: inf.request.prompt, file, createdAt: new Date().toISOString() };
     await fsp.writeFile(file.replace(/\.[^.]+$/, ".json"), JSON.stringify({ request: inf.request, createdAt: preview.createdAt }, null, 2));
     this.store.update(job.projectId, (p) => {
       p.previews.unshift(preview);
-      const f = findScene(p, job.sceneId).blocks.find((b) => b.id === inf.blockId)?.frames?.find((x) => x.id === inf.frameId);
+      const b = findScene(p, job.sceneId).blocks.find((x) => x.id === inf.blockId);
+      if (inf.plate) {
+        if (b?.plate) b.plate.imageId = preview.id;
+        return;
+      }
+      const f = b?.frames?.find((x) => x.id === inf.frameId);
       if (f) Object.assign(f, { imageId: preview.id, status: "pending" });
     });
     return file;
