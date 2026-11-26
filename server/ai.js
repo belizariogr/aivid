@@ -1,12 +1,31 @@
-// Roteiro automático por API: chaves dos provedores, modelos disponíveis e geração em segundo plano.
+// IA do Takes: provedores (APIs com chave e CLIs com assinatura), modelos disponíveis, configurações
+// gerais e o roteiro automático em segundo plano.
 import fs from "node:fs";
-import { newId } from "./store.js";
+import { findCli, resetCliCache, streamClaudeCode, streamCodex, streamCursor, codexModels } from "./cli.js";
+import { newId, normalizeSettings } from "./store.js";
 import { fullScriptRequest, repairRequest, parseScript, extractJson } from "./llm.js";
 
+// `cli`: usa o login de uma assinatura pelo programa de linha de comando, sem chave de API.
 export const PROVIDERS = {
-  anthropic: { name: "Claude (Anthropic)", keyUrl: "https://console.anthropic.com/settings/keys" },
-  openai: { name: "OpenAI (ChatGPT / Codex)", keyUrl: "https://platform.openai.com/api-keys" },
+  "claude-code": { name: "Claude Code (assinatura Claude)", cli: "claude", setup: "Instale o Claude Code e faça login com `claude`." },
+  codex: { name: "Codex (assinatura ChatGPT)", cli: "codex", setup: "Instale o Codex e faça login com `codex login`." },
+  cursor: { name: "Cursor (assinatura Cursor)", cli: "cursor-agent", alt: "agent", setup: "Instale com `curl https://cursor.com/install -fsS | bash` e faça login com `cursor-agent login`." },
+  anthropic: { name: "Claude API (chave)", keyUrl: "https://console.anthropic.com/settings/keys" },
+  openai: { name: "OpenAI API (chave)", keyUrl: "https://platform.openai.com/api-keys" },
 };
+
+const cliPath = (provider) => {
+  const p = PROVIDERS[provider];
+  return p?.cli ? findCli(p.cli) ?? (p.alt ? findCli(p.alt) : null) : null;
+};
+
+// Modelos que o Claude Code aceita pelo nome; a lista não vem de uma API.
+const CLAUDE_CODE_MODELS = [
+  { id: "claude-opus-5-5", name: "Claude Opus 5.5" },
+  { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
+  { id: "claude-haiku-5-5", name: "Claude Haiku 5.5" },
+  { id: "claude-fable-5-2", name: "Claude Fable 5.2" },
+];
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1";
 const ANTHROPIC_VERSION = "2026-10-21";
@@ -20,16 +39,40 @@ const OPENAI_SKIP = /(audio|realtime|tts|transcribe|image|search|embedding|moder
 
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const modelRef = (m) => (m && PROVIDERS[m.provider] && typeof m.id === "string" && m.id ? { provider: m.provider, id: m.id } : null);
+const effortOf = (v, fallback) => (EFFORTS.includes(v) ? v : fallback);
+
+// Configurações gerais do Takes (valem para todos os projetos): chaves de API, o modelo e o esforço
+// do roteiro, o modelo e o esforço da revisão e do juiz, e os padrões de um projeto novo.
 export class AiSettings {
   constructor(file) {
     this.file = file;
-    this.data = { keys: {}, model: null };
+    let raw = {};
     try {
-      const raw = JSON.parse(fs.readFileSync(file, "utf8"));
-      this.data = { keys: raw.keys && typeof raw.keys === "object" ? raw.keys : {}, model: raw.model ?? null };
+      raw = JSON.parse(fs.readFileSync(file, "utf8"));
     } catch {
       /* ainda não configurado */
     }
+    this.data = {
+      keys: raw.keys && typeof raw.keys === "object" ? raw.keys : {},
+      model: modelRef(raw.model),
+      effort: effortOf(raw.effort, "high"),
+      reviewModel: modelRef(raw.reviewModel),
+      reviewEffort: effortOf(raw.reviewEffort, "medium"),
+      // Modo rápido do roteiro e da revisão/juiz (só nos modelos Claude que têm).
+      fast: Boolean(raw.fast),
+      reviewFast: Boolean(raw.reviewFast),
+      // Um quadro do take a cada N segundos vai para o juiz (e para o ajuste antes do retake).
+      frameSeconds: [1, 2, 3, 4].includes(Number(raw.frameSeconds)) ? Number(raw.frameSeconds) : 2,
+      defaults: normalizeSettings(raw.defaults ?? {}),
+    };
+  }
+
+  // Provedor pronto para uso: chave cadastrada (API) ou programa instalado (assinatura).
+  has(provider) {
+    if (!PROVIDERS[provider]) return false;
+    return PROVIDERS[provider].cli ? Boolean(cliPath(provider)) : Boolean(this.key(provider));
   }
 
   key(provider) {
@@ -40,26 +83,50 @@ export class AiSettings {
   view() {
     return {
       providers: Object.entries(PROVIDERS).map(([id, p]) => {
+        if (p.cli) {
+          const file = cliPath(id);
+          return { id, name: p.name, cli: true, configured: Boolean(file), path: file, setup: p.setup };
+        }
         const key = this.key(id);
         return { id, name: p.name, keyUrl: p.keyUrl, configured: Boolean(key), hint: key ? `…${key.slice(-4)}` : "" };
       }),
       model: this.data.model,
+      effort: this.data.effort,
+      reviewModel: this.data.reviewModel,
+      reviewEffort: this.data.reviewEffort,
+      fast: this.data.fast,
+      reviewFast: this.data.reviewFast,
+      frameSeconds: this.data.frameSeconds,
+      defaults: this.data.defaults,
+      efforts: EFFORTS,
     };
   }
 
-  update({ keys, model } = {}) {
+  // Modelo da revisão e do juiz: o próprio, ou o do roteiro.
+  supervisor() {
+    const m = this.data.reviewModel && this.has(this.data.reviewModel.provider) ? this.data.reviewModel : this.data.model;
+    return m && this.has(m.provider) ? m : null;
+  }
+
+  update({ keys, model, effort, reviewModel, reviewEffort, frameSeconds, fast, reviewFast, defaults } = {}) {
+    if (fast !== undefined) this.data.fast = Boolean(fast);
+    if (reviewFast !== undefined) this.data.reviewFast = Boolean(reviewFast);
+    if (frameSeconds !== undefined && [1, 2, 3, 4].includes(Number(frameSeconds))) this.data.frameSeconds = Number(frameSeconds);
     if (keys && typeof keys === "object") {
       for (const [id, value] of Object.entries(keys)) {
-        if (!PROVIDERS[id] || typeof value !== "string") continue;
+        if (!PROVIDERS[id] || PROVIDERS[id].cli || typeof value !== "string") continue;
         const key = value.trim();
         if (key) this.data.keys[id] = key;
         else delete this.data.keys[id];
       }
     }
-    if (model !== undefined) {
-      this.data.model = model && PROVIDERS[model.provider] && typeof model.id === "string" ? { provider: model.provider, id: model.id } : null;
-    }
-    if (this.data.model && !this.key(this.data.model.provider)) this.data.model = null;
+    if (model !== undefined) this.data.model = modelRef(model);
+    if (reviewModel !== undefined) this.data.reviewModel = modelRef(reviewModel);
+    if (effort !== undefined) this.data.effort = effortOf(effort, this.data.effort);
+    if (reviewEffort !== undefined) this.data.reviewEffort = effortOf(reviewEffort, this.data.reviewEffort);
+    if (defaults && typeof defaults === "object") this.data.defaults = normalizeSettings({ ...this.data.defaults, ...defaults });
+    if (this.data.model && !this.has(this.data.model.provider)) this.data.model = null;
+    if (this.data.reviewModel && !this.has(this.data.reviewModel.provider)) this.data.reviewModel = null;
     const tmp = `${this.file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, this.file);
@@ -109,6 +176,7 @@ async function anthropicModels(key, fetchImpl) {
     maxTokens: Number(m.max_tokens) || null,
     adaptive: Boolean(m.capabilities?.thinking?.types?.adaptive?.supported),
     effort: Boolean(m.capabilities?.effort?.high?.supported),
+    efforts: EFFORTS.filter((level) => m.capabilities?.effort?.[level]?.supported),
   }));
 }
 
@@ -123,7 +191,17 @@ async function openaiModels(key, fetchImpl) {
 }
 
 // Respostas longas vão por streaming: um roteiro inteiro passa do tempo limite de uma resposta comum.
-async function streamAnthropic({ key, model, system, messages, signal, onText, fetchImpl }) {
+async function streamAnthropic(opts) {
+  try {
+    return await anthropicOnce(opts);
+  } catch (error) {
+    if (!opts.fast || error.code !== "FAST_UNAVAILABLE") throw error;
+    opts.onNotice?.(`Modo rápido indisponível (${error.message}); a chamada seguiu no modo normal.`);
+    return anthropicOnce({ ...opts, fast: false });
+  }
+}
+
+async function anthropicOnce({ key, model, system, messages, signal, onText, fetchImpl, effort = "high", fast = false }) {
   const body = {
     model: model.id,
     max_tokens: Math.min(model.maxTokens || 64000, 64000),
@@ -132,22 +210,38 @@ async function streamAnthropic({ key, model, system, messages, signal, onText, f
     system,
     messages,
   };
-  if (model.adaptive) body.thinking = { type: "adaptive" };
-  if (model.effort) body.output_config = { effort: "high" };
+  // Sem "summarized", os modelos novos pensam em silêncio (display "omitted"): nenhum texto chega
+  // durante o planejamento e a interface parece travada.
+  if (model.adaptive) body.thinking = { type: "adaptive", display: "summarized" };
+  // Um nível que o modelo não aceita cai no mais próximo abaixo dele.
+  if (model.effort) {
+    const levels = model.efforts?.length ? model.efforts : EFFORTS;
+    const wanted = EFFORTS.indexOf(effort);
+    const level = levels.includes(effort) ? effort : [...levels].reverse().find((l) => EFFORTS.indexOf(l) <= wanted) ?? levels[0];
+    body.output_config = { effort: level };
+  }
+  // Modo rápido (Opus 5.5 e Fable 5.2): mais tokens por segundo, ao dobro do preço.
+  if (fast) body.speed = "fast";
   const headers = anthropicHeaders(key);
   if (ANTHROPIC_FALLBACK.has(model.id)) {
     headers["anthropic-beta"] = "server-side-fallback-2026-07-01";
     body.fallbacks = "default";
   }
   const res = await fetchImpl(`${ANTHROPIC_URL}/messages`, { method: "POST", headers, body: JSON.stringify(body), signal });
-  if (!res.ok) throw await apiError(res, "anthropic");
+  if (!res.ok) {
+    const error = await apiError(res, "anthropic");
+    if (fast && res.status === 400 && /speed|fast/i.test(error.message)) error.code = "FAST_UNAVAILABLE";
+    throw error;
+  }
   let text = "";
   let stop = null;
   for await (const ev of sse(res.body)) {
     if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
       text += ev.delta.text;
       onText(text, "writing");
-    } else if (ev.type === "content_block_delta" && ev.delta?.type === "thinking_delta") onText(text, "thinking");
+    } else if (ev.type === "content_block_delta" && ev.delta?.type === "thinking_delta") onText(text, "thinking", ev.delta.thinking ?? "");
+    else if (ev.type === "message_start") onText(text, "received");
+    else if ((ev.type === "content_block_start" && ev.content_block?.type === "thinking") || ev.delta?.type === "signature_delta") onText(text, "thinking", "");
     else if (ev.type === "message_delta") stop = ev.delta?.stop_reason ?? stop;
     else if (ev.type === "error") throw fail(`Claude: ${ev.error?.message || "erro no streaming"}.`, 502);
   }
@@ -170,7 +264,8 @@ async function streamOpenai({ key, model, system, messages, signal, onText, fetc
     if (ev.type === "response.output_text.delta") {
       text += ev.delta;
       onText(text, "writing");
-    } else if (ev.type === "response.reasoning_summary_text.delta" || ev.type === "response.in_progress") onText(text, "thinking");
+    } else if (ev.type === "response.reasoning_summary_text.delta") onText(text, "thinking", ev.delta ?? "");
+    else if (ev.type === "response.created" || ev.type === "response.in_progress") onText(text, "received");
     else if (ev.type === "response.incomplete") {
       const reason = ev.response?.incomplete_details?.reason;
       if (reason === "max_output_tokens") throw fail("A resposta passou do limite de tamanho do modelo. Divida o roteiro em partes menores.", 422);
@@ -181,8 +276,38 @@ async function streamOpenai({ key, model, system, messages, signal, onText, fetc
   return text;
 }
 
-const STREAM = { anthropic: streamAnthropic, openai: streamOpenai };
-const LIST = { anthropic: anthropicModels, openai: openaiModels };
+const STREAM = { anthropic: streamAnthropic, openai: streamOpenai, "claude-code": streamClaudeCode, codex: streamCodex, cursor: streamCursor };
+// Tentativas de gerar um roteiro válido (a 1ª e até duas correções).
+const MAX_ATTEMPTS = 3;
+
+// Mensagem do usuário com texto e imagens no formato de cada provedor.
+// `parts`: [{ text }] ou [{ image: { mediaType, data } }] (data em base64). Os CLIs recebem as
+// partes como estão e montam o pedido do seu jeito.
+export function userMessage(provider, parts) {
+  if (PROVIDERS[provider]?.cli) return { role: "user", parts };
+  const content = parts.map((part) => {
+    if (part.image) {
+      const { mediaType, data } = part.image;
+      return provider === "openai"
+        ? { type: "input_image", image_url: `data:${mediaType};base64,${data}` }
+        : { type: "image", source: { type: "base64", media_type: mediaType, data } };
+    }
+    return provider === "openai" ? { type: "input_text", text: part.text } : { type: "text", text: part.text };
+  });
+  return { role: "user", content };
+}
+
+// Uma resposta completa (com streaming por baixo, que não estoura o tempo limite).
+export function ask(provider, opts) {
+  return STREAM[provider]({ onText: () => {}, ...opts });
+}
+const LIST = {
+  anthropic: anthropicModels,
+  openai: openaiModels,
+  "claude-code": async () => CLAUDE_CODE_MODELS.map((m) => ({ provider: "claude-code", ...m, effort: true, adaptive: true, efforts: EFFORTS })),
+  codex: async () => codexModels(),
+  cursor: async () => [{ provider: "cursor", id: "auto", name: "Automático (o Cursor escolhe)" }],
+};
 
 export class ScriptWriter {
   constructor({ settings, store, fetchImpl = fetch, onChange = () => {} }) {
@@ -196,12 +321,13 @@ export class ScriptWriter {
 
   // Lista os modelos de todos os provedores com chave. Um provedor com erro não esconde os outros.
   async listModels({ refresh = false } = {}) {
+    if (refresh) resetCliCache();
     const models = [];
     const errors = [];
     await Promise.all(
       Object.keys(PROVIDERS).map(async (provider) => {
-        const key = this.settings.key(provider);
-        if (!key) return;
+        if (!this.settings.has(provider)) return;
+        const key = PROVIDERS[provider].cli ? cliPath(provider) : this.settings.key(provider);
         const cached = this.models.get(provider);
         if (!refresh && cached?.key === key) return models.push(...cached.list);
         try {
@@ -220,7 +346,8 @@ export class ScriptWriter {
 
   async resolveModel(provider, id) {
     if (!PROVIDERS[provider]) throw fail("Escolha um modelo.");
-    if (!this.settings.key(provider)) throw fail(`Cadastre a chave de API de ${PROVIDERS[provider].name}.`);
+    if (!this.settings.has(provider))
+      throw fail(PROVIDERS[provider].cli ? `${PROVIDERS[provider].name} não encontrado neste Mac. ${PROVIDERS[provider].setup}` : `Cadastre a chave de API de ${PROVIDERS[provider].name}.`);
     await this.listModels();
     const model = this.models.get(provider)?.list.find((m) => m.id === id);
     return model ?? { provider, id };
@@ -246,20 +373,30 @@ export class ScriptWriter {
       throw fail("Já há um roteiro sendo gerado para este projeto.", 409);
   }
 
-  async start(projectId, { script, seconds, provider, model: modelId }) {
+  // Gera as cenas com o modelo das Configurações e, se a resposta passar na validação, já importa
+  // no projeto (`mode`: "append" acrescenta, "replace" troca todas as cenas). Com `film`, põe o
+  // filme completo na fila logo depois.
+  async start(projectId, { script, seconds, mode = "append", film = false }) {
     this.store.get(projectId);
     if (!String(script || "").trim()) throw fail("Cole o roteiro completo.");
+    const chosen = this.settings.data.model;
+    if (!chosen || !this.settings.has(chosen.provider)) throw fail("Escolha o modelo do roteiro em Configurações.");
     this.ensureIdle(projectId);
-    const model = await this.resolveModel(provider, modelId);
+    this.checkImport?.(projectId, { mode });
+    const model = await this.resolveModel(chosen.provider, chosen.id);
     this.ensureIdle(projectId);
+    const provider = chosen.provider;
     const task = {
       id: newId(),
       projectId,
       provider,
+      options: { mode: mode === "replace" ? "replace" : "append", film: Boolean(film) },
+      imported: null,
       model: model.id,
       modelName: model.name || model.id,
       status: "running",
       phase: "Enviando o roteiro…",
+      thought: "",
       chars: 0,
       attempt: 1,
       text: "",
@@ -279,37 +416,59 @@ export class ScriptWriter {
     const { system, user } = fullScriptRequest(project, input);
     const messages = [{ role: "user", content: user }];
     let last = 0;
-    const onText = (text, kind) => {
+    const onText = (text, kind, thought = "") => {
       task.chars = text.length;
-      task.phase = kind === "thinking" && !text ? "Planejando as cenas…" : task.attempt > 1 ? "Corrigindo o roteiro…" : "Escrevendo as cenas…";
+      const fixing = task.attempt > 1;
+      if (text) task.phase = fixing ? "Corrigindo o roteiro…" : "Escrevendo as cenas…";
+      else if (kind === "received") task.phase = fixing ? "O modelo recebeu os problemas e está pensando na correção…" : "O modelo recebeu o roteiro e está pensando…";
+      else if (kind === "thinking") task.phase = fixing ? "Planejando a correção…" : "Planejando as cenas…";
+      // Fim do resumo do raciocínio, para a interface mostrar no que o modelo está pensando.
+      if (thought) task.thought = (task.thought + thought).replace(/\s+/g, " ").slice(-240);
       if (Date.now() - last > 400) {
         last = Date.now();
         this.emit(task);
       }
     };
+    let data = null;
     try {
       for (;;) {
-        const text = await STREAM[task.provider]({ key: this.settings.key(task.provider), model, system, messages, signal: task.abort.signal, onText, fetchImpl: this.fetch });
-        // A resposta fica disponível mesmo com erro, para o usuário corrigir à mão.
+        const text = await STREAM[task.provider]({
+          key: this.settings.key(task.provider),
+          model,
+          system,
+          messages,
+          signal: task.abort.signal,
+          onText,
+          fetchImpl: this.fetch,
+          effort: this.settings.data.effort,
+          fast: this.settings.data.fast,
+          onNotice: (msg) => (task.notices ??= []).push(msg),
+        });
         task.text = text;
         let errors;
         try {
-          const data = extractJson(text);
-          parseScript(this.store.get(task.projectId), data);
+          data = extractJson(text);
+          parseScript(this.store.get(task.projectId), data, { strict: true });
           task.text = JSON.stringify(data, null, 2);
           break;
         } catch (error) {
           errors = error.details ?? [error.message];
         }
-        // Uma tentativa de correção: devolve os problemas à LLM junto com a resposta anterior.
-        if (task.attempt >= 2) throw fail(`O roteiro gerado ainda tem problemas:\n${errors.join("\n")}`, 422);
+        // Até duas correções: devolve os problemas à LLM junto com a resposta anterior.
+        if (task.attempt >= MAX_ATTEMPTS) throw fail(`O roteiro gerado ainda tem problemas depois de ${MAX_ATTEMPTS} tentativas:\n${errors.join("\n")}`, 422);
         task.attempt += 1;
-        task.phase = "Corrigindo o roteiro…";
+        task.phase = "Enviando os problemas para o modelo corrigir…";
+        task.thought = "";
         this.emit(task);
         messages.push({ role: "assistant", content: text }, { role: "user", content: repairRequest(errors) });
       }
+      if (this.importer) {
+        task.phase = "Importando as cenas…";
+        this.emit(task);
+        task.imported = await this.importer(task.projectId, data, task.options);
+      }
       task.status = "complete";
-      task.phase = "Pronto";
+      task.phase = task.imported ? "Cenas importadas" : "Pronto";
     } catch (error) {
       task.status = task.abort.signal.aborted ? "canceled" : "error";
       task.error = task.abort.signal.aborted ? "Cancelado." : error.message;

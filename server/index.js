@@ -9,9 +9,10 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Store, findScene, selectedTake, blockState, slug, newId, normalizeCharacter } from "./store.js";
 import { LtxClient } from "./ltx.js";
-import { JobQueue, sceneFolder } from "./jobs.js";
-import { buildBrief, userPrompt, parseScript } from "./llm.js";
+import { JobQueue, sceneFolder, attention } from "./jobs.js";
+import { parseScript } from "./llm.js";
 import { AiSettings, ScriptWriter } from "./ai.js";
+import { ContinuityReviewer } from "./review.js";
 import * as media from "./media.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -24,15 +25,52 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const res of clients) res.write(payload);
   };
+  const aiSettings = new AiSettings(path.join(root, "ai.json"));
+  const writer = new ScriptWriter({ settings: aiSettings, store, fetchImpl, onChange: (task) => broadcast("ai", task) });
   const queue = new JobQueue({
     store,
     ltx,
     mediaLib,
     file: path.join(root, "jobs.json"),
     onChange: (jobs) => broadcast("jobs", jobs),
+    reviewer: new ContinuityReviewer({ settings: aiSettings, writer, media: mediaLib, fetchImpl }),
   });
-  const aiSettings = new AiSettings(path.join(root, "ai.json"));
-  const writer = new ScriptWriter({ settings: aiSettings, store, fetchImpl, onChange: (task) => broadcast("ai", task) });
+  // Cenas novas no fim do projeto, no lugar de uma cena (`replaceSceneId`) ou no lugar de todas
+  // (`mode: "replace"`; os vídeos continuam na pasta de saída).
+  const busy = (id) => queue.jobs.some((j) => j.projectId === id && ["queued", "running"].includes(j.status) && ["video", "film"].includes(j.kind));
+  function checkImport(id, { mode } = {}) {
+    if (mode === "replace" && busy(id))
+      throw Object.assign(new Error("Há cenas deste projeto na fila. Cancele ou espere terminar antes de substituir todas as cenas."), { status: 409 });
+  }
+  function importScenes(id, scenes, { mode = "append", replaceSceneId = null } = {}) {
+    checkImport(id, { mode });
+    return store.update(id, (p) => {
+      if (mode === "replace") p.scenes = scenes;
+      else if (replaceSceneId) {
+        const at = p.scenes.findIndex((s) => s.id === replaceSceneId);
+        if (at < 0) throw Object.assign(new Error("Cena a substituir não encontrada."), { status: 404 });
+        const old = p.scenes[at];
+        scenes[0].id = old.id;
+        scenes[0].start = old.start.kind !== "none" ? old.start : scenes[0].start;
+        p.scenes.splice(at, 1, ...scenes);
+      } else p.scenes.push(...scenes);
+    });
+  }
+  writer.checkImport = checkImport;
+  writer.importer = (id, data, { mode, film }) => {
+    const { scenes, warnings } = parseScript(store.get(id), data);
+    importScenes(id, scenes, { mode });
+    const imported = { sceneIds: scenes.map((s) => s.id), scenes: scenes.length, blocks: scenes.reduce((n, s) => n + s.blocks.length, 0), mode, warnings, film: null };
+    if (film) {
+      try {
+        const r = queue.addFilm(id);
+        imported.film = { scenes: r.added.length };
+      } catch (error) {
+        imported.film = { error: error.message };
+      }
+    }
+    return imported;
+  };
   let onShutdown = () => {};
   const originalSave = store.save.bind(store);
   store.save = (project) => {
@@ -50,8 +88,9 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
 
   function view(project) {
     const p = structuredClone(project);
-    for (const scene of p.scenes) scene.blocks.forEach((b, i) => (b.state = blockState(project.scenes.find((s) => s.id === scene.id), i)));
+    for (const scene of p.scenes) scene.blocks.forEach((b, i) => (b.state = blockState(project.scenes.find((s) => s.id === scene.id), i, project)));
     p.summary = { sceneCount: p.scenes.length };
+    p.attention = attention(project);
     return p;
   }
 
@@ -82,7 +121,8 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
   route("GET", "/api/projects", () =>
     store.list().map((p) => ({ id: p.id, name: p.name, updatedAt: p.updatedAt, scenes: p.scenes.length, characters: p.characters.length })),
   );
-  route("POST", "/api/projects", ({ body }) => view(store.create(body.name)));
+  // Um projeto novo começa com os padrões das Configurações.
+  route("POST", "/api/projects", ({ body }) => view(store.create(body.name, aiSettings.data.defaults)));
   route("GET", "/api/projects/:id", ({ id }) => view(store.get(id)));
   route("PUT", "/api/projects/:id", ({ id, body }) => view(store.edit(id, body)));
   route("DELETE", "/api/projects/:id", ({ id }) => (store.remove(id), { ok: true }));
@@ -141,6 +181,11 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
         for (const s of p.scenes) {
           if (s.backgroundId === bid) s.backgroundId = null;
           if (s.start.kind === "background" && s.start.id === bid) s.start = { kind: "none", id: null };
+          if (s.start.kind === "keyframe" && s.start.ref?.kind === "background" && s.start.ref.id === bid) s.start = { ...s.start, ref: { kind: "none", id: null } };
+          for (const b of s.blocks) {
+            if (b.start?.kind === "background" && b.start.id === bid) b.start = { kind: "scene", id: null };
+            if (b.start?.kind === "keyframe" && b.start.ref?.kind === "background" && b.start.ref.id === bid) b.start = { ...b.start, ref: { kind: "scene", id: null } };
+          }
         }
       }),
     ),
@@ -164,7 +209,15 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
     view(
       store.update(id, (p) => {
         p.previews = p.previews.filter((x) => x.id !== pid);
-        for (const s of p.scenes) if (s.start.kind === "preview" && s.start.id === pid) s.start = { kind: "none", id: null };
+        for (const s of p.scenes) {
+          if (s.start.kind === "preview" && s.start.id === pid) s.start = { kind: "none", id: null };
+          if (s.start.kind === "keyframe" && s.start.id === pid) s.start = { ...s.start, id: null };
+          for (const b of s.blocks) {
+            if (b.start?.kind === "preview" && b.start.id === pid) b.start = { kind: "scene", id: null };
+            if (b.start?.kind === "keyframe" && b.start.id === pid) b.start = { ...b.start, id: null };
+            if (b.start?.kind === "keyframe" && b.start.ref?.kind === "preview" && b.start.ref.id === pid) b.start = { ...b.start, ref: { kind: "scene", id: null } };
+          }
+        }
       }),
     ),
   );
@@ -178,17 +231,79 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
     return view(store.update(id, (p) => void p.backgrounds.push({ id: bid, name: String(body.name || "Fundo da prévia").slice(0, 200), description: String(body.description || ""), image: file })));
   });
 
-  route("POST", "/api/projects/:id/scenes/:sid/generate", ({ id, sid, body }) =>
-    queue.addScene(id, sid, { from: Number(body.from) || 0, only: body.only || null, missing: Boolean(body.missing) }),
+  // Salva um quadro de um take (no instante escolhido no player) como prévia, para servir de imagem
+  // inicial de um corte, de imagem inicial da cena ou de base para um fundo.
+  route("POST", "/api/projects/:id/scenes/:sid/blocks/:kid/frame", async ({ id, sid, kid, body }) => {
+    const project = store.get(id);
+    const scene = findScene(project, sid);
+    const index = scene.blocks.findIndex((b) => b.id === kid);
+    const block = scene.blocks[index];
+    const take = block?.takes.find((t) => t.id === body.takeId) ?? selectedTake(block);
+    if (!take || !fs.existsSync(take.file)) throw Object.assign(new Error("Este bloco não tem vídeo."), { status: 404 });
+    if (!project.outputDir) throw Object.assign(new Error("Escolha a pasta de saída do projeto."), { status: 400 });
+    const time = Math.max(0, Number(body.time) || 0);
+    const dir = path.join(project.outputDir, "previas");
+    await fsp.mkdir(dir, { recursive: true });
+    const name = `${slug(scene.title, "cena")}-bloco-${String(index + 1).padStart(2, "0")}-${time.toFixed(2).replace(".", "s")}-${Date.now().toString(36)}.png`;
+    const file = path.join(dir, name);
+    const info = await mediaLib.probe(take.file);
+    // Perto do fim, -ss pode passar do último quadro e não gerar nada.
+    const last = time >= info.duration - 1.5 / info.fps;
+    await mediaLib.extractFrame(take.file, file, last ? { which: "last" } : { which: "at", time });
+    if (!fs.existsSync(file)) throw new Error("Não foi possível extrair o quadro.");
+    const preview = {
+      id: newId(),
+      sceneId: sid,
+      backgroundId: null,
+      prompt: `Quadro do bloco ${index + 1} em ${time.toFixed(2)} s.`,
+      file,
+      createdAt: new Date().toISOString(),
+      fromBlock: { blockId: kid, takeId: take.id, time },
+    };
+    const updated = store.update(id, (p) => void p.previews.unshift(preview));
+    return { project: view(updated), previewId: preview.id };
+  });
+
+  // Descarta a imagem de abertura gerada de um bloco; a próxima geração do bloco cria outra.
+  route("POST", "/api/projects/:id/scenes/:sid/blocks/:kid/keyframe/reset", ({ id, sid, kid }) =>
+    view(
+      store.update(id, (p) => {
+        const scene = findScene(p, sid);
+        const index = scene.blocks.findIndex((b) => b.id === kid);
+        if (index === 0 && scene.start.kind === "keyframe") scene.start = { ...scene.start, id: null };
+        else if (scene.blocks[index]?.start?.kind === "keyframe") scene.blocks[index].start = { ...scene.blocks[index].start, id: null };
+      }),
+    ),
   );
-  route("POST", "/api/projects/:id/generate-all", ({ id, body }) => queue.addAllScenes(id, { missing: Boolean(body.missing) }));
+
+  // Volta o bloco ao que era antes da revisão de continuidade com IA.
+  route("POST", "/api/projects/:id/scenes/:sid/blocks/:kid/review/undo", ({ id, sid, kid }) => {
+    const updated = store.update(id, (p) => {
+      const scene = findScene(p, sid);
+      const block = scene.blocks.find((b) => b.id === kid);
+      if (!block?.review?.before || block.review.undone) throw Object.assign(new Error("Não há revisão para desfazer neste bloco."), { status: 409 });
+      const { sceneStart, ...before } = block.review.before;
+      Object.assign(block, before);
+      if (sceneStart) scene.start = sceneStart;
+      block.review = { ...block.review, undone: true, at: new Date().toISOString() };
+    });
+    return view(updated);
+  });
+
+  route("POST", "/api/projects/:id/scenes/:sid/generate", ({ id, sid, body }) =>
+    queue.addScene(id, sid, { from: Number(body.from) || 0, only: body.only || null, missing: Boolean(body.missing), quality: body.quality }),
+  );
+  // Do roteiro ao filme: gera o que falta em todas as cenas, une tudo e escreve o relatório.
+  route("POST", "/api/projects/:id/film", ({ id, body }) => queue.addFilm(id, { missing: body.missing !== false, quality: body.quality }));
+  route("POST", "/api/projects/:id/characters/:cid/references", ({ id, cid }) => queue.addCharsheet(id, cid));
+  route("POST", "/api/projects/:id/generate-all", ({ id, body }) => queue.addAllScenes(id, { missing: Boolean(body.missing), quality: body.quality }));
   route("GET", "/api/projects/:id/scenes/:sid/playlist", ({ id, sid }) => {
     const project = store.get(id);
     const scene = findScene(project, sid);
     let t = 0;
     return scene.blocks.map((b, i) => {
       const take = selectedTake(b);
-      const item = { blockId: b.id, index: i, start: t, duration: b.duration, state: blockState(scene, i), continuity: i === 0 ? "start" : b.continuity, prompt: b.prompt, file: take?.file ?? null };
+      const item = { blockId: b.id, index: i, start: t, duration: b.duration, state: blockState(scene, i, project), continuity: i === 0 ? "start" : b.continuity, prompt: b.prompt, file: take?.file ?? null };
       t += b.duration;
       return item;
     });
@@ -225,36 +340,16 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
     }));
   });
 
-  route("GET", "/api/projects/:id/llm-brief", ({ id }) => {
-    const project = store.get(id);
-    return { __download: `${slug(project.name, "projeto")}.takes-llm.json`, body: buildBrief(project) };
-  });
-  route("POST", "/api/projects/:id/llm-prompt", ({ id, body }) => {
-    const project = store.get(id);
-    const fileName = `${slug(project.name, "projeto")}.takes-llm.json`;
-    const brief = body.inline ? buildBrief(project) : null;
-    return { text: userPrompt(project, { request: String(body.request || ""), seconds: Number(body.seconds) || null, fileName, inline: Boolean(body.inline), brief }), fileName };
-  });
+  // Importa um roteiro (JSON no formato takes.scene-script). O assistente de roteiro importa sozinho
+  // quando a geração termina; esta rota serve para reimportar uma resposta salva.
   route("POST", "/api/projects/:id/import-script", ({ id, body }) => {
-    const project = store.get(id);
-    const { scenes, warnings } = parseScript(project, body.text ?? body.script);
+    const { scenes, warnings } = parseScript(store.get(id), body.text ?? body.script);
     if (body.validateOnly) return { scenes, warnings };
-    const updated = store.update(id, (p) => {
-      if (body.replaceSceneId) {
-        const at = p.scenes.findIndex((s) => s.id === body.replaceSceneId);
-        if (at < 0) throw Object.assign(new Error("Cena a substituir não encontrada."), { status: 404 });
-        const old = p.scenes[at];
-        scenes[0].id = old.id;
-        scenes[0].start = old.start.kind !== "none" ? old.start : scenes[0].start;
-        p.scenes.splice(at, 1, ...scenes);
-      } else {
-        p.scenes.push(...scenes);
-      }
-    });
+    const updated = importScenes(id, scenes, { mode: body.mode, replaceSceneId: body.replaceSceneId });
     return { project: view(updated), sceneIds: scenes.map((s) => s.id), warnings };
   });
 
-  // Chaves de API (ficam só neste Mac, fora dos projetos) e roteiro gerado automaticamente.
+  // Configurações gerais (ficam só neste Mac, fora dos projetos) e roteiro gerado automaticamente.
   route("GET", "/api/ai", () => aiSettings.view());
   route("PUT", "/api/ai", ({ body }) => {
     const view = aiSettings.update(body);
@@ -263,10 +358,7 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
   });
   route("GET", "/api/ai/models", ({ query }) => writer.listModels({ refresh: query.get("refresh") === "1" }));
   route("GET", "/api/projects/:id/ai-script", ({ id }) => writer.list(id));
-  route("POST", "/api/projects/:id/ai-script", ({ id, body }) => {
-    if (body.provider && body.model) aiSettings.update({ model: { provider: body.provider, id: body.model } });
-    return writer.start(id, body);
-  });
+  route("POST", "/api/projects/:id/ai-script", ({ id, body }) => writer.start(id, body));
   route("POST", "/api/ai-script/:tid/cancel", ({ tid }) => writer.cancel(tid));
 
   route("POST", "/api/pick-folder", async ({ body }) => {

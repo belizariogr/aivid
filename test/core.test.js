@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Store, mergeEdit, newProject, blockState, normalizeSettings } from "../server/store.js";
-import { parseScript, extractJson, buildBrief, userPrompt, SCRIPT_FORMAT } from "../server/llm.js";
-import { videoPrompt, imageSize } from "../server/prompts.js";
+import { parseScript, extractJson, buildBrief, fullScriptRequest, SCRIPT_FORMAT } from "../server/llm.js";
+import { videoPrompt, imageSize, blockBackground } from "../server/prompts.js";
 import { renderDuration } from "../server/ltx.js";
 import { latentFrames } from "../server/media.js";
 
@@ -96,17 +96,115 @@ test("parseScript resolves names, validates limits and accepts fenced JSON", () 
   assert.throws(() => extractJson("sem json"), /JSON/);
 });
 
-test("brief and user prompt describe the project", () => {
+test("parseScript reads the opening image of each cut and validates it", () => {
+  const p = sample();
+  p.backgrounds.push({ id: "cafe-open", name: "Café aberto", description: "the café with its door wide open", image: "/x/open.png" });
+  const blocks = [
+    { duration: 6, prompt: "Wide shot of Ana at the door.", note: "" },
+    { duration: 5, continuity: "continue", prompt: "Push in to a close-up of Ana opening the door.", note: "Termina em close." },
+    { duration: 4, continuity: "cut", start: "block:1", prompt: "Back to the wide shot; the door stands open.", note: "Volta ao plano aberto." },
+    { duration: 4, continuity: "cut", start: "background:Café aberto", prompt: "Reverse angle." },
+    { duration: 4, continuity: "cut", start: "none", prompt: "Street outside." },
+    { duration: 4, continuity: "frame", start: "scene", prompt: "She waits." },
+  ];
+  const { scenes, warnings } = parseScript(p, { scene: { title: "Porta", backgroundId: "cafe", start: "none", blocks } }, { strict: true });
+  const [scene] = scenes;
+  assert.deepEqual(scene.start, { kind: "none", id: null });
+  assert.deepEqual(scene.blocks[2].start, { kind: "block", id: scene.blocks[0].id });
+  assert.deepEqual(scene.blocks[3].start, { kind: "background", id: "cafe-open" });
+  assert.deepEqual(scene.blocks[4].start, { kind: "none", id: null });
+  assert.deepEqual(scene.blocks[5].start, { kind: "scene", id: null });
+  assert.equal(scene.blocks[1].note, "Termina em close.");
+  assert.equal(warnings.length, 1, "start em bloco que não é corte gera aviso");
+
+  // Erros que voltam para a LLM corrigir: corte sem start (modo estrito), bloco posterior, fundo inexistente.
+  const bad = { scene: { blocks: [blocks[0], { duration: 4, continuity: "cut", prompt: "x" }, { duration: 4, continuity: "cut", start: "block:3", prompt: "y" }, { duration: 4, continuity: "cut", start: "background:Praia", prompt: "z" }] } };
+  assert.throws(
+    () => parseScript(p, bad, { strict: true }),
+    (e) => e.details.length === 3 && /sem "start"/.test(e.message) && /bloco anterior/.test(e.message) && /Praia/.test(e.message),
+  );
+  // Sem modo estrito, corte sem start usa a imagem da cena com aviso.
+  const loose = parseScript(p, { scene: { blocks: [blocks[0], { duration: 4, continuity: "cut", prompt: "x" }] } });
+  assert.deepEqual(loose.scenes[0].blocks[1].start, { kind: "scene", id: null });
+  assert.match(loose.warnings[0], /sem "start"/);
+});
+
+test("parseScript reads generated openings, state, scene starts and checks dialogue and pacing", () => {
+  const p = sample();
+  p.settings.audio = true;
+  p.scenes.push({ id: "old", title: "Antes", blocks: [] });
+  const script = {
+    scenes: [
+      {
+        title: "Volta",
+        backgroundId: "cafe",
+        start: "previous",
+        blocks: [
+          { duration: 6, state: "The door stands open.", prompt: 'Ana says "Voltei, finalmente."' },
+          { duration: 5, continuity: "cut", start: "keyframe", reference: "block:1", opening: "Close-up of Ana by the open door.", prompt: "Close-up." },
+        ],
+      },
+      { title: "Gerada", backgroundId: "cafe", start: "keyframe", reference: "none", blocks: [{ duration: 5, opening: "Wide shot of the café.", prompt: "Wide." }] },
+    ],
+  };
+  const { scenes } = parseScript(p, script, { strict: true });
+  assert.deepEqual(scenes[0].start, { kind: "previous", id: null });
+  assert.equal(scenes[0].blocks[0].currentState, "The door stands open.");
+  assert.deepEqual(scenes[0].blocks[1].start, { kind: "keyframe", id: null, ref: { kind: "block", id: scenes[0].blocks[0].id } });
+  assert.equal(scenes[0].blocks[1].opening, "Close-up of Ana by the open door.");
+  assert.deepEqual(scenes[1].start, { kind: "keyframe", id: null, ref: { kind: "none", id: null } });
+
+  const long = 'Ana says "' + Array.from({ length: 20 }, () => "palavra").join(" ") + '"';
+  const bad = { scene: { blocks: [{ duration: 4, prompt: long }, { duration: 2, continuity: "continue", prompt: "x" }, { duration: 5, continuity: "cut", start: "keyframe", prompt: "y" }] } };
+  assert.throws(
+    () => parseScript(p, bad, { strict: true }),
+    (e) => e.details.length === 3 && /20 palavras de fala em 4s/.test(e.message) && /curto demais/.test(e.message) && /sem "opening"/.test(e.message),
+  );
+  const loose = parseScript(p, bad);
+  assert.equal(loose.warnings.length, 3);
+  const first = newProject("Vazio");
+  assert.throws(() => parseScript(first, { scene: { start: "previous", blocks: [{ duration: 5, prompt: "a" }] } }), /primeira cena/);
+});
+
+test("the script instructions explain how blocks carry state and framing", () => {
+  const { system } = fullScriptRequest(sample(), { script: "x" });
+  assert.match(system, /no memory between blocks/);
+  assert.match(system, /"block:N"/);
+  assert.match(system, /close-up/);
+  assert.match(system, /"note"/);
+  assert.match(system, /"start": "block:1"/);
+  assert.match(system, /"keyframe"/);
+  assert.match(system, /"previous"/);
+  assert.match(system, /2\.5 spoken words per second/);
+});
+
+test("a cut that opens from another background changes the setting from then on", () => {
+  const p = sample();
+  p.backgrounds.push({ id: "open", name: "Aberto", description: "the café with its door wide open", image: "/x/open.png" });
+  const scene = {
+    backgroundId: "cafe",
+    characterIds: [],
+    blocks: [
+      { id: "a", continuity: "cut", prompt: "a" },
+      { id: "b", continuity: "cut", start: { kind: "background", id: "open" }, prompt: "b" },
+      { id: "c", continuity: "continue", prompt: "c" },
+      { id: "d", continuity: "cut", start: { kind: "block", id: "c" }, prompt: "d" },
+      { id: "e", continuity: "cut", start: { kind: "scene" }, prompt: "e" },
+    ],
+  };
+  assert.deepEqual(scene.blocks.map((b) => blockBackground(p, scene, b).id), ["cafe", "open", "open", "open", "cafe"]);
+  assert.match(videoPrompt(p, scene, scene.blocks[2], { mode: "continue" }), /door wide open/);
+});
+
+test("the brief describes the project", () => {
   const p = sample();
   const brief = buildBrief(p);
   assert.equal(brief.project.characters[0].name, "Ana");
   assert.equal(brief.project.characters[0].photo, undefined);
   assert.equal(brief.responseFormat.example.format, SCRIPT_FORMAT);
-  const text = userPrompt(p, { request: "Ana espera", seconds: 60, fileName: "t.json" });
-  assert.match(text, /t\.json/);
-  assert.match(text, /60 segundos/);
-  const inline = userPrompt(p, { request: "x", inline: true, brief });
-  assert.match(inline, /```json/);
+  const { system, user } = fullScriptRequest(p, { script: "Ana espera.", seconds: 60 });
+  assert.match(system, /same language as the script/);
+  assert.match(user, /about 60 seconds/);
 });
 
 test("video prompt stacks pre-prompt, setting, cast and action", () => {
