@@ -906,7 +906,7 @@ test("storyboard: the AI describes frames, images are drawn and checked, and the
   assert.equal(scene.blocks[1].frames[1].status, "approved");
   assert.equal(scene.blocks[0].prompt, "Teca walks to the gate and opens it.");
   assert.equal(scene.blocks[0].frames[2].description, "frame 1 at 12, the gate wide open");
-  assert.deepEqual(checks, ["frame 1 at 0", "frame 1 at 5", "frame 1 at 12", "frame 1 at 12, the gate wide open", "frame 2 at 4"]);
+  assert.deepEqual(checks, ["Empty cardboard square, wide shot.", "frame 1 at 0", "frame 1 at 5", "frame 1 at 12", "frame 1 at 12, the gate wide open", "frame 2 at 4"], "o fundo do plano também é conferido");
   const images = ltx.calls.filter((c) => c[0] === "image").map((c) => c[1]);
   assert.equal(images.length, 6, "fundo do plano + 4 quadros + 1 redesenho");
   assert.equal(images[0].prompt, "Empty cardboard square, wide shot.");

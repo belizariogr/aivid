@@ -1257,7 +1257,7 @@ export class JobQueue {
           const got = plan.blocks.find((x) => x.index === i);
           if (got?.prompt) b.prompt = got.prompt;
           const shot = i === 0 || b.continuity === "cut";
-          b.plate = shot && got?.plate ? { description: got.plate, imageId: b.plate?.description === got.plate && !job.redo ? b.plate.imageId ?? null : null } : null;
+          b.plate = shot && got?.plate ? { description: got.plate, change: got.plateChange ?? "near", imageId: b.plate?.description === got.plate && !job.redo ? b.plate.imageId ?? null : null } : null;
           b.frames = layout[i].map((w) => {
             const old = (b.frames ?? []).find((f) => Math.abs(f.at - w.at) < 0.01);
             const description = w.shared ? "" : got?.frames.find((f) => Math.abs(f.at - w.at) < 0.5)?.description ?? old?.description ?? "";
@@ -1302,23 +1302,55 @@ export class JobQueue {
   }
 
   // Fundo ideal do plano: o lugar vazio deste ângulo, desenhado a partir do fundo original da cena.
+  // Quanto o desenho pode mudar o original segue o quanto a câmera do plano difere dele; a IA
+  // confere (mesmo lugar, mesmos marcos, ninguém em cena) e corrige até 3 vezes.
   async drawPlate(job, blockId, label) {
-    const project = this.store.get(job.projectId);
-    const scene = findScene(project, job.sceneId);
-    const index = scene.blocks.findIndex((b) => b.id === blockId);
-    const block = scene.blocks[index];
-    const bg = project.backgrounds.find((b) => b.id === scene.backgroundId)?.image;
-    const request = {
-      prompt: block.plate.description,
-      ...imageSize(project.settings.aspectRatio, STORYBOARD_SHORT_SIDE),
-      numImages: 1,
-      ...(bg && fs.existsSync(bg) ? { imagePath: bg, strength: 0.6 } : {}),
-    };
-    const inflight = { type: "frame", plate: true, request, blockId, frameId: null, index, at: 0, sceneTitle: scene.title };
-    const result = await this.withLtx(job, label, inflight, () => this.ltx.generateImage(request, { signal: job.abort.signal }));
-    if (job.cancelRequested || result?.status !== "complete") return;
-    if (!result.image_paths?.[0]) throw new Error("O LTX não devolveu o fundo do plano.");
-    await this.finish(job, result.image_paths[0]);
+    const STRENGTH = { same: 0.3, near: 0.5, new: 0.7 };
+    const signal = job.abort.signal;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (job.cancelRequested) return;
+      const project = this.store.get(job.projectId);
+      const scene = findScene(project, job.sceneId);
+      const index = scene.blocks.findIndex((b) => b.id === blockId);
+      const block = scene.blocks[index];
+      const bg = project.backgrounds.find((b) => b.id === scene.backgroundId)?.image;
+      const request = {
+        prompt: block.plate.description,
+        ...imageSize(project.settings.aspectRatio, STORYBOARD_SHORT_SIDE),
+        numImages: 1,
+        ...(bg && fs.existsSync(bg) ? { imagePath: bg, strength: STRENGTH[block.plate.change] ?? 0.5 } : {}),
+      };
+      const inflight = { type: "frame", plate: true, request, blockId, frameId: null, index, at: 0, sceneTitle: scene.title };
+      const result = await this.withLtx(job, `${label}${attempt > 1 ? `, tentativa ${attempt}` : ""}`, inflight, () => this.ltx.generateImage(request, { signal }));
+      if (job.cancelRequested || result?.status !== "complete") return;
+      if (!result.image_paths?.[0]) throw new Error("O LTX não devolveu o fundo do plano.");
+      const file = await this.finish(job, result.image_paths[0]);
+      if (!this.reviewer?.checkFrame) return;
+      job.phase = `${label}: a IA está conferindo o fundo`;
+      this.changed();
+      let v;
+      try {
+        const work = path.join(sceneFolder(project, scene), ".trabalho");
+        await fsp.mkdir(work, { recursive: true });
+        v = await this.reviewer.checkFrame({ project, scene, index, frame: { at: 0, description: block.plate.description }, file, prevFile: null, work, signal, plate: true });
+      } catch (error) {
+        if (error.code === "ABORTED" || signal.aborted) return;
+        (job.warnings ??= []).push(`Fundo do plano do bloco ${index + 1}: a conferência falhou (${error.message}); ficou sem conferir.`);
+        return;
+      }
+      (job.judged ??= []).push({ blockIndex: index, pass: v.pass, plate: true });
+      if (v.pass) return;
+      if (attempt === 3) {
+        (job.warnings ??= []).push(`Fundo do plano do bloco ${index + 1}: reprovado 3 vezes (${v.reason}); ficou o último.`);
+        return;
+      }
+      // Reprovado: descrição corrigida e menos liberdade para mudar o fundo original.
+      this.store.update(job.projectId, (p) => {
+        const b = findScene(p, job.sceneId).blocks.find((x) => x.id === blockId);
+        if (!b?.plate) return;
+        b.plate = { ...b.plate, imageId: null, description: v.description || b.plate.description, change: b.plate.change === "new" ? "near" : "same" };
+      });
+    }
   }
 
   // Imagem de referência do quadro: o quadro anterior (mesmo plano), o fundo do plano ou o fundo.
@@ -1328,7 +1360,7 @@ export class JobQueue {
     const block = scene.blocks[index];
     const plate = frameIndex === 0 ? this.plateFile(project, scene.blocks[shotStart(scene, index)]) : null;
     // 1º quadro de um plano: parte do fundo ideal do plano (e não do quadro de outro ângulo).
-    if (plate && (index === 0 || block.continuity === "cut")) return { file: plate, strength: 0.75, prev: prev?.file ?? null };
+    if (plate && (index === 0 || block.continuity === "cut")) return { file: plate, strength: 0.65, prev: prev?.file ?? null };
     if (prev?.file) return { file: prev.file, strength: frameIndex === 0 && block.continuity === "cut" ? 0.85 : 0.6, prev: prev.file };
     if (index === 0 && scene.start?.kind === "previous") {
       const at = project.scenes.findIndex((x) => x.id === scene.id);

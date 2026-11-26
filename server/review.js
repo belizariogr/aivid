@@ -81,12 +81,12 @@ const STORYBOARD_SYSTEM = `You are the storyboard artist of a video made with LT
 
 For every block listed, write one description per frame time it asks for. A frame marked "shared" is the last frame of the previous block and is not yours to describe. Each description is the COMPLETE prompt the image model receives, nothing is added to it, and the image model breaks down with long prompts: write at most 90 words (about 600 characters), plain and concrete, in this order: the style in a few words (from the pre-prompt, e.g. "3D animated children's film still, cardboard village"), the framing (shot size, angle), each character with their essential look (species, colors, outfit, from the project characters and notes) and their position, pose and expression, the objects that matter and their visible state, and the light. Do not use negations or lists of things to avoid. Consecutive frames must be the same place and the same characters, with positions that change plausibly within the seconds between them; a "cut" block may change the angle but keeps the place, the moment and the state.
 
-For every block marked "shotStart" (the first block of a shot), also write "plate": the prompt of the EMPTY place seen from this shot's camera, with no characters, in the state the place is in at that moment (at most 90 words, same style rules). It is drawn from the project background image and every frame of the shot starts from it, so the place stays the same within the shot.
+For every block marked "shotStart" (the first block of a shot), also write "plate": the prompt of the EMPTY place seen from this shot's camera, with no characters, in the state the place is in at that moment (at most 90 words, same style rules). It is drawn from the project background image and every frame of the shot starts from it, so the place stays the same within the shot. Describe the same buildings and objects as the background image (same count: one windmill stays one windmill). Also give "plateChange": "same" when the shot's camera is close to the background image's view, "near" for a moderately different framing of the same view, "new" for a clearly different angle (reverse shot, close-up of a detail).
 
 You may also rewrite a block's "prompt" so the motion it describes goes from frame to frame in order (English, one paragraph of 3 to 7 sentences, present tense). Keep the story, the dialogue and the characters of the block.
 
 Reply with ONLY a JSON object, no text before or after it:
-{"blocks": [{"block": 1, "plate": "empty place for a shot start, or omit", "prompt": "optional rewritten prompt, or omit", "frames": [{"at": 0, "description": "..."}, {"at": 10, "description": "..."}]}]}`;
+{"blocks": [{"block": 1, "plate": "empty place for a shot start, or omit", "plateChange": "same | near | new", "prompt": "optional rewritten prompt, or omit", "frames": [{"at": 0, "description": "..."}, {"at": 10, "description": "..."}]}]}`;
 
 // O Z-Image se perde com prompts longos (personagens duplicados, colagens): ~90 palavras no máximo.
 const FRAME_MAX_CHARS = 700;
@@ -352,7 +352,8 @@ export class ContinuityReviewer {
           const plate = text(b.plate);
           if ((index === 0 || scene.blocks[index].continuity === "cut") && !plate) errors.push(`bloco ${index + 1}: falta o "plate" (fundo do plano)`);
           if (plate.length > FRAME_MAX_CHARS) errors.push(`bloco ${index + 1}: "plate" com ${plate.length} caracteres; o limite é ${FRAME_MAX_CHARS}`);
-          return { index, prompt: text(b.prompt) || null, plate: plate || null, frames };
+          const plateChange = ["same", "near", "new"].includes(b.plateChange) ? b.plateChange : "near";
+          return { index, prompt: text(b.prompt) || null, plate: plate || null, plateChange, frames };
         });
         if (errors.length) throw Object.assign(fail(errors.join("; ")), { details: errors });
         return { blocks: blocks.filter(Boolean) };
@@ -363,14 +364,17 @@ export class ContinuityReviewer {
   }
 
   // Confere um quadro do storyboard. Devolve { pass, problems, reason, description?, prompt?, memory }.
-  async checkFrame({ project, scene, index, frame, file, prevFile, work, signal }) {
+  // `plate`: confere o fundo do plano (lugar vazio) em vez de um quadro com personagens.
+  async checkFrame({ project, scene, index, frame, file, prevFile, work, signal, plate = false }) {
     const block = scene.blocks[index];
     const m = this.parts(work, signal);
     m.text(
       [
         this.projectText(project, scene),
-        `Block ${index + 1} of the scene, frame at ${frame.at} s of ${block.duration} s.`,
-        `Frame description: ${frame.description}`,
+        plate
+          ? `This is the BACKGROUND PLATE of the shot that starts at block ${index + 1}: the empty place, with NO characters, that every frame of the shot is drawn from. Fail it if any character or creature appears, or if it is not recognizably the same place as the background image: the same kinds and NUMBER of buildings and landmarks (one windmill stays one windmill), the same style; a different camera angle is fine when the description asks for it.`
+          : `Block ${index + 1} of the scene, frame at ${frame.at} s of ${block.duration} s.`,
+        `${plate ? "Plate" : "Frame"} description: ${frame.description}`,
         `State that must show: ${block.currentState || "(nothing differs from the background)"}`,
         `Block prompt: ${block.prompt}`,
       ].join("\n"),
@@ -379,7 +383,7 @@ export class ContinuityReviewer {
     await m.image("Frame to check:", file);
     const bg = project.backgrounds.find((b) => b.id === scene.backgroundId);
     if (bg?.image) await m.image(`Background "${bg.name}" (the place, original state):`, bg.image);
-    await this.characterImages(m, project, scene, block);
+    if (!plate) await this.characterImages(m, project, scene, block);
     m.text("Check the frame now and reply with the JSON.");
     return this.askJson(
       FRAME_SYSTEM,

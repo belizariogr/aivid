@@ -133,7 +133,8 @@ export function normalizePlate(plate, previous) {
   if (!plate || typeof plate !== "object") return null;
   const description = str(plate.description ?? previous?.description ?? "", 2000);
   const keep = previous && previous.description === description;
-  return { description, imageId: keep ? previous.imageId ?? null : previous ? null : plate.imageId ?? null };
+  const change = ["same", "near", "new"].includes(plate.change) ? plate.change : previous?.change ?? "near";
+  return { description, change, imageId: keep ? previous.imageId ?? null : previous ? null : plate.imageId ?? null };
 }
 
 export function normalizeBlock(b = {}, previous) {
