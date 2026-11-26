@@ -907,7 +907,7 @@ test("storyboard: the AI describes frames, images are drawn and checked, and the
   assert.deepEqual(checks, ["frame 1 at 0", "frame 1 at 5", "frame 1 at 12", "frame 1 at 12, the gate wide open", "frame 2 at 4"]);
   const images = ltx.calls.filter((c) => c[0] === "image").map((c) => c[1]);
   assert.equal(images.length, 5, "4 quadros + 1 redesenho");
-  assert.deepEqual([images[0].width, images[0].height], [1920, 1088]);
+  assert.deepEqual([images[0].width, images[0].height], [1344, 768]);
   assert.ok(images[1].imagePath, "cada quadro parte do anterior");
   const videos = ltx.calls.filter((c) => c[0] === "generate").map((c) => c[1]);
   assert.equal(videos.length, 2);

@@ -889,7 +889,7 @@ function storyboard() {
       <div class="section-head">
         <div>
           <h3>Storyboard</h3>
-          <p class="hint">A IA descreve um quadro no início de cada bloco, um a cada ${s.frameEvery ?? 2} s e um no fim (no máximo 10 por bloco, o limite do LTX; acima disso ficam distribuídos por igual). O Z-Image desenha cada um em alta definição, partindo do anterior, e a IA confere e corrige até 3 vezes. Com o modo ligado, o vídeo de cada bloco passa exatamente por esses quadros, e os blocos se emendam pelo quadro em comum.</p>
+          <p class="hint">A IA descreve um quadro no início de cada bloco, um a cada ${s.frameEvery ?? 2} s e um no fim (no máximo 10 por bloco, o limite do LTX; acima disso ficam distribuídos por igual). O Z-Image desenha cada um (1344×768, a resolução nativa dele), partindo do anterior, e a IA confere e corrige até 3 vezes. Com o modo ligado, o vídeo de cada bloco passa exatamente por esses quadros, e os blocos se emendam pelo quadro em comum.</p>
           <p class="hint">${all.length ? `${done} de ${all.length} quadros aprovados.` : "Nenhum quadro ainda."}${running ? ` · ${esc(running.phase || "")}` : ""}</p>
         </div>
         <button class="btn primary" data-action="storyboard-all" ${p.scenes.length && !jobs.length ? "" : "disabled"}>${jobs.length ? "Storyboard na fila…" : "🎞 Gerar storyboard"}</button>

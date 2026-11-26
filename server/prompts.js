@@ -112,8 +112,10 @@ export function framePrompt(project, scene, block, frame) {
     .join("\n\n");
 }
 
-// Imagens do storyboard em alta definição (estáticas saem rápido): lado menor de 1088 px.
-export const STORYBOARD_SHORT_SIDE = 1088;
+// Imagens do storyboard na resolução nativa do Z-Image Turbo (~1 megapixel, 1344×768 em 16:9).
+// Acima disso ele repete e cola pedaços da imagem (glitch, personagens duplicados); 768 px de
+// lado menor já cobre o vídeo em 720p, e o LTX ajusta o tamanho dos keyframes.
+export const STORYBOARD_SHORT_SIDE = 768;
 
 export function previewPrompt(project, scene, extra, { withCharacters = true } = {}) {
   const body = clean(extra) || clean(scene?.blocks?.[0]?.prompt) || clean(scene?.synopsis);
