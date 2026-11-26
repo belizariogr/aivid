@@ -960,11 +960,11 @@ test("storyboard by default draws only each shot's opening and starts the video 
   assert.equal(ltx.calls.filter((c) => c[0] === "extend").length, 1);
 });
 
-test("a storyboard frame rejected three times keeps its best attempt", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+test("a storyboard frame rejected every time keeps its best attempt", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
   const store = new Store(path.join(root, "lib"));
   const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
-  const scores = [4, 7, 3];
+  const scores = [4, 7, 3, 2, 5, 6];
   const reviewer = {
     async planStoryboard({ layout }) {
       return { blocks: layout.map((frames, index) => ({ index, plate: null, prompt: null, frames: frames.map((f) => ({ at: f.at, description: "try 1" })) })) };
@@ -985,7 +985,7 @@ test("a storyboard frame rejected three times keeps its best attempt", { skip: !
   assert.equal(frame.judge.score, 7);
   assert.equal(frame.description, "try 1+");
   const drawn = project.previews.filter((x) => x.kind === "frame").reverse();
-  assert.equal(drawn.length, 3);
+  assert.equal(drawn.length, 6);
   assert.equal(frame.imageId, drawn[1].id, "fica a imagem da 2ª tentativa, a de nota mais alta");
 });
 

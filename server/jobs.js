@@ -155,6 +155,7 @@ export class JobQueue {
     this.pollMs = 1500;
     // Consultas seguidas sem resposta do LTX antes de dar uma geração recuperada como perdida.
     this.recoverTolerance = 40;
+    this.frameAttempts = 6; // desenhos de um quadro do storyboard antes de ficar com o melhor
     // Guarda do LTX: o LTX só gera para o Takes. Uma geração que não é nossa é cancelada; se ele
     // não obedecer em `foreignGraceMs`, ou ficar `unresponsiveLimit` consultas sem responder, ou
     // uma geração nossa ficar `stallMs` sem avançar, o LTX Desktop é reiniciado.
@@ -1380,8 +1381,10 @@ export class JobQueue {
 
   async drawFrame(job, blockId, frameId, label) {
     const signal = job.abort.signal;
-    let best = null; // a melhor tentativa reprovada: é ela que fica se as três forem reprovadas
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    let best = null; // a melhor tentativa reprovada: é ela que fica se todas forem reprovadas
+    // O Z-Image erra por sorteio (um personagem duplicado, outro fora do lugar): desenhar de novo é
+    // barato (segundos) e a abertura decide o bloco inteiro, então vale tentar bastante.
+    for (let attempt = 1; attempt <= this.frameAttempts; attempt++) {
       if (job.cancelRequested) return;
       const project = this.store.get(job.projectId);
       const scene = findScene(project, job.sceneId);
@@ -1429,8 +1432,8 @@ export class JobQueue {
       if (v.pass) return this.setFrame(job, blockId, frameId, { status: "approved", judge });
       const imageId = findScene(this.store.get(job.projectId), job.sceneId).blocks.find((b) => b.id === blockId)?.frames.find((f) => f.id === frameId)?.imageId ?? null;
       if (!best || (v.score ?? 0) > (best.judge.score ?? 0)) best = { judge, imageId, description: frame.description };
-      if (attempt === 3) {
-        (job.warnings ??= []).push(`Quadro ${frame.at} s do bloco ${index + 1}: reprovado 3 vezes (${best.judge.reason}); ficou a melhor tentativa (${best.judge.attempt}ª, nota ${best.judge.score}). Refaça na aba Storyboard se precisar.`);
+      if (attempt === this.frameAttempts) {
+        (job.warnings ??= []).push(`Quadro ${frame.at} s do bloco ${index + 1}: reprovado ${attempt} vezes (${best.judge.reason}); ficou a melhor tentativa (${best.judge.attempt}ª, nota ${best.judge.score}). Refaça na aba Storyboard se precisar.`);
         return this.setFrame(job, blockId, frameId, { status: "rejected", judge: best.judge, ...(best.imageId ? { imageId: best.imageId, description: best.description } : {}) });
       }
       // Reprovado: a próxima imagem sai da descrição corrigida (e do prompt do bloco, se a IA mudou).
