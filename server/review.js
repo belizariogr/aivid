@@ -91,7 +91,9 @@ const FRAME_MAX_CHARS = 700;
 
 const FRAME_SYSTEM = `You check one storyboard frame of a video made with LTX inside the Takes app. An image model drew it; it will be pinned as a keyframe of the video, so whatever is wrong in it will be wrong in the film. You see the frame, the previous frame of the storyboard (continuity), the background image of the place and reference photos of the characters.
 
-Pass the frame when it shows the described framing and action, the right characters looking like their references (species, colors, outfit, proportions), the place and the state described, nobody duplicated or deformed, no stray text, and it continues the previous frame plausibly. Small differences of detail pass.
+Be strict about what the film depends on, and tolerant about the rest:
+- FAIL for: a character missing, duplicated, deformed or not looking like their reference (species, colors, outfit, proportions); people or creatures that do not belong in the film (for example a human in an animal village); the key objects of the story in the wrong state (a ribbon missing or present when it should not be, a gate closed when it should be open); the action of the frame not shown; glitches, collage, stray text.
+- PASS despite: a different arrangement of the background (where houses, trees or the windmill are, how many there are, the exact stall), small differences of detail, pose or light. The place only needs to read as the same kind of place in the same style; continuity with the previous frame matters more than matching the background image.
 
 When it fails, rewrite the frame "description" so the next drawing gets it right. The description is the complete prompt of the image model, which breaks down with long prompts: keep it at most 90 words (about 600 characters), plain and concrete (style in a few words, framing, each character with species, colors and outfit, position and pose, objects and state, light), and fix what went wrong by stating clearly what must be there; avoid long lists of things that must not appear. If the block "prompt" contradicts the frames, give a corrected "prompt" too.
 
