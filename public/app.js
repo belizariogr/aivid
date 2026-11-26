@@ -376,7 +376,7 @@ function memoryCard(p) {
         <h3>Aprendizados da IA <span class="muted small">${notes.length}/15</span></h3>
         <button class="btn small" data-action="add-note">＋ Nota</button>
       </div>
-      <p class="hint">Notas curtas (em inglês) que entram em todo prompt de vídeo e de imagem, logo depois do pré-prompt. A revisão e o ajuste antes do retake anotam aqui o que aprenderam e vale para o projeto todo.</p>
+      <p class="hint">Notas curtas (em inglês) para a IA que escreve, confere e corrige os prompts: ela as aplica, em forma positiva, em cada prompt que escreve. Não vão direto para o LTX nem para o gerador de imagens (listas de "nunca X" fazem esses modelos desenharem X). A revisão e o ajuste antes do retake anotam aqui o que aprenderam e vale para o projeto todo.</p>
       <label class="check"><input type="checkbox" data-bind="p.settings.learn" ${p.settings.learn !== false ? "checked" : ""}> Deixar a IA anotar aprendizados</label>
       ${
         notes.length

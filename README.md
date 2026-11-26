@@ -167,7 +167,7 @@ Quando o rascunho estiver bom, **★ Versão final**, no cabeçalho do projeto, 
 
 #### Aprendizados da IA
 
-Notas curtas (em inglês) do projeto, que entram em todo prompt de vídeo e de imagem, logo depois do pré-prompt, e no pedido do roteiro. A revisão e o ajuste antes do retake podem acrescentar ou retirar notas quando aprendem algo que vale para o projeto todo, por exemplo: "Teca is a capybara with a broad brown snout, never a hamster". Também dá para:
+Notas curtas (em inglês) do projeto para a IA que escreve, confere e corrige os prompts (roteiro, storyboard, revisão, juiz). Ela aplica as notas em forma positiva em cada prompt que escreve; as notas não vão direto para o LTX nem para o gerador de imagens, porque listas de "nunca X" fazem esses modelos desenharem justamente X (duas capivaras, fitas repetidas) e alongam o prompt. A revisão e o ajuste antes do retake podem acrescentar ou retirar notas quando aprendem algo que vale para o projeto todo, por exemplo: "Teca is a capybara with a broad brown snout, never a hamster". Também dá para:
 
 - ver, editar, apagar e acrescentar notas na aba Projeto (até 15);
 - desligar com **Deixar a IA anotar aprendizados**.

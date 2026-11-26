@@ -50,11 +50,6 @@ function setting(project, scene, block = null) {
 }
 
 // Aprendizados do projeto (escritos pela IA ou por você), logo depois do pré-prompt.
-function notes(project) {
-  const list = (project.memory ?? []).map((n) => sentence(n.text)).filter(Boolean);
-  return list.length ? `Project notes: ${list.join(" ")}` : "";
-}
-
 function current(block) {
   return clean(block?.currentState) ? `Current state: ${sentence(block.currentState)}` : "";
 }
@@ -63,20 +58,23 @@ function cast(characters) {
   return characters.length ? `Characters: ${characters.map(describeCharacter).join(" ")}` : "";
 }
 
+// Cada geração do LTX é um plano contínuo: os cortes acontecem entre gerações, nunca dentro.
 const MODE_HINT = {
   continue:
-    "Continue the shot seamlessly from the previous footage: same characters, setting, lighting, lens and camera style, with no cut or jump.",
+    "Continue the shot seamlessly from the previous footage: same characters, setting, lighting, lens and camera style. One continuous shot with no cuts.",
   frame:
-    "The attached image is the last frame of the previous shot and the opening frame of this one. Continue the action from it, preserving setting, layout, lighting and character appearance.",
+    "The attached image is the last frame of the previous shot and the opening frame of this one. Continue the action from it, preserving setting, layout, lighting and character appearance. One continuous shot with no cuts.",
   image:
-    "Use the attached image as the opening frame. Preserve its setting, layout, lighting and character appearance while animating the action.",
+    "Use the attached image as the opening frame. Preserve its setting, layout, lighting and character appearance while animating the action. One continuous shot with no cuts.",
   storyboard:
-    "The attached keyframes are frames of this shot at fixed times. Move smoothly and naturally from one to the next, keeping the characters, the place, the state and the lighting exactly as they appear in them.",
+    "The attached keyframes are frames of this shot at fixed times. Move smoothly and naturally from one to the next, keeping the characters, the place, the state and the lighting exactly as they appear in them. One continuous shot with no cuts.",
 };
 
 export function videoPrompt(project, scene, block, { mode, hasImage = false }) {
   const hint = mode === "storyboard" ? MODE_HINT.storyboard : mode === "continue" ? MODE_HINT.continue : mode === "frame" ? MODE_HINT.frame : hasImage ? MODE_HINT.image : "";
-  return [clean(project.prePrompt), notes(project), setting(project, scene, block), current(block), cast(sceneCharacters(project, scene, block)), clean(block.prompt), hint]
+  // As notas do projeto ficam com as LLMs, que as aplicam ao escrever os prompts: no LTX, uma
+  // lista de "nunca X" faz aparecer X (duas capivaras, fitas duplicadas) e alonga o prompt.
+  return [clean(project.prePrompt), setting(project, scene, block), current(block), cast(sceneCharacters(project, scene, block)), clean(block.prompt), hint]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -86,7 +84,6 @@ export function keyframePrompt(project, scene, block) {
   const opening = clean(block.opening) || clean(block.prompt);
   return [
     clean(project.prePrompt),
-    notes(project),
     setting(project, scene, block),
     current(block),
     cast(sceneCharacters(project, scene, block)),
@@ -113,7 +110,6 @@ export function previewPrompt(project, scene, extra, { withCharacters = true } =
   const body = clean(extra) || clean(scene?.blocks?.[0]?.prompt) || clean(scene?.synopsis);
   return [
     clean(project.prePrompt),
-    notes(project),
     setting(project, scene),
     withCharacters ? cast(sceneCharacters(project, scene, null)) : "Empty environment with no people.",
     body,
@@ -144,7 +140,6 @@ export const REFERENCE_VIEWS = {
 export function referencePrompt(project, character, view) {
   return [
     clean(project.prePrompt),
-    notes(project),
     `Character reference sheet of ${describeCharacter(character)}`,
     REFERENCE_VIEWS[view].text,
     "Plain light gray background, even soft studio lighting, sharp focus, the same face, hair and outfit as the reference.",

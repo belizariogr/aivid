@@ -820,7 +820,7 @@ test("a draft in low resolution, then the final version with the plan frozen", {
   assert.equal(finalFilm.result.lacking, 0);
 });
 
-test("the AI writes project notes that go into every later prompt", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+test("the AI writes project notes for itself, and the video model never gets them", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
   const store = new Store(path.join(root, "lib"));
   const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
@@ -852,11 +852,9 @@ test("the AI writes project notes that go into every later prompt", { skip: !ffm
   const memory = store.get(p.id).memory;
   assert.equal(memory.length, 1, "a mesma nota não é repetida");
   assert.match(memory[0].by, /take reprovado/);
-  // 1º take sem a nota; o retake e o bloco 2 já com ela, logo depois do pré-prompt.
+  // As notas guiam as LLMs; o LTX não as recebe (listas de "nunca X" fazem aparecer X).
   const prompts = ltx.calls.map((c) => c[1].prompt);
-  assert.doesNotMatch(prompts[0], /Project notes/);
-  assert.match(prompts[1], /^Cardboard world\n\nProject notes: Teca is a capybara/);
-  assert.match(prompts[2], /Project notes: Teca is a capybara/);
+  for (const prompt of prompts) assert.doesNotMatch(prompt, /Project notes|Teca is a capybara/);
 
   // Com "learn" desligado, nada é anotado.
   store.edit(p.id, { memory: [], settings: { learn: false } });
