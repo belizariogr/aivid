@@ -841,15 +841,20 @@ export class JobQueue {
       for (const text of memory.add) {
         if (p.memory.some((n) => n.text.toLowerCase() === text.toLowerCase())) continue;
         if (p.memory.length >= MAX_NOTES) {
-          full = true;
-          break;
+          // Cheio: a nota nova toma o lugar da nota mais antiga da IA; as suas ficam.
+          const oldest = p.memory.findIndex((n) => n.by !== "você");
+          if (oldest < 0) {
+            full = true;
+            break;
+          }
+          p.memory.splice(oldest, 1);
         }
         p.memory.push({ id: newId(), text, at: new Date().toISOString(), by: source });
         added++;
       }
     });
     (job.learned ??= []).push({ added, removed: memory.remove.length, source });
-    if (full) (job.warnings ??= []).push(`A IA quis anotar um aprendizado, mas o projeto já tem ${MAX_NOTES} notas. Apague as que não servem mais na aba Projeto.`);
+    if (full) (job.warnings ??= []).push(`A IA quis anotar um aprendizado, mas as ${MAX_NOTES} notas do projeto são suas. Apague as que não servem mais na aba Projeto.`);
   }
 
   // Espera que termina antes se a tarefa for cancelada.

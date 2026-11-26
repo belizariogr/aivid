@@ -1050,3 +1050,19 @@ test("LTX gets the pre-prompt's style line, summarized once per pre-prompt by th
   assert.equal(asked.length, 2);
   assert.match(ltx.calls.at(-1)[1].prompt, /^Hand style\./);
 });
+
+test("with the notes full, a new AI note replaces the oldest AI note and never one of yours", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const queue = new JobQueue({ store, ltx: new FakeLtx(root) });
+  const p = store.create("Notas cheias");
+  store.edit(p.id, { memory: Array.from({ length: 15 }, (_, i) => ({ text: `note ${i}`, by: i < 2 ? "você" : "IA" })) });
+  const job = { projectId: p.id };
+  queue.learn(job, { add: ["fresh lesson"], remove: [] }, "IA · teste");
+  const texts = store.get(p.id).memory.map((n) => n.text);
+  assert.equal(texts.length, 15);
+  assert.deepEqual(texts.slice(0, 2), ["note 0", "note 1"]);
+  assert.ok(!texts.includes("note 2"), "sai a nota mais antiga da IA");
+  assert.equal(texts.at(-1), "fresh lesson");
+  assert.equal(job.warnings, undefined);
+});
