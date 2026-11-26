@@ -200,6 +200,9 @@ const BLOCK_STATUS = new Set(["empty", "ready", "stale", "missing"]);
 // Projetos salvos antes de `currentState` guardavam o estado do bloco em `state`, que a interface
 // sobrescrevia com o status do bloco. Mantém o texto que ainda for estado e descarta o status.
 export function migrateProject(project) {
+  // Configurações novas (resolução do rascunho, aprendizados…) ganham o valor padrão.
+  project.settings = normalizeSettings(project.settings ?? {});
+  project.memory ??= [];
   for (const scene of project.scenes ?? [])
     for (const block of scene.blocks ?? []) {
       if (!("state" in block)) continue;

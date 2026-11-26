@@ -186,3 +186,17 @@ test("projects saved with the old state field are migrated on load", async () =>
   const blocks = new Store(root).get("p1").scenes[0].blocks;
   assert.deepEqual(blocks.map((b) => [b.currentState, "state" in b]), [["The gate is open.", false], [undefined, false]]);
 });
+
+test("old projects get the new settings with their defaults", async () => {
+  const { Store } = await import("../server/store.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-mig-"));
+  const dir = path.join(root, "projects", "p1");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "project.json"), JSON.stringify({ id: "p1", name: "Velho", updatedAt: "x", settings: { resolution: "720p", judge: true }, characters: [], backgrounds: [], previews: [], scenes: [] }));
+  const p = new Store(root).get("p1");
+  assert.equal(p.settings.draftResolution, "360p");
+  assert.equal(p.settings.resolution, "720p");
+  assert.equal(p.settings.judge, true);
+  assert.equal(p.settings.learn, true);
+  assert.deepEqual(p.memory, []);
+});
