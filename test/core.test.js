@@ -231,3 +231,13 @@ test("frame and duration math", () => {
   assert.deepEqual(imageSize("16:9"), { width: 1344, height: 768 });
   assert.deepEqual(imageSize("9:16"), { width: 768, height: 1344 });
 });
+
+test("storyboard frame times: one every few seconds, at most 10, shared start in the same shot", async () => {
+  const { frameTimes } = await import("../server/store.js");
+  assert.deepEqual(frameTimes({ duration: 8, continuity: "cut" }, 0, 2).map((f) => f.at), [0, 2, 4, 6, 8]);
+  const long = frameTimes({ duration: 20, continuity: "cut" }, 0, 2);
+  assert.equal(long.length, 10);
+  assert.deepEqual([long[0].at, long.at(-1).at], [0, 20]);
+  assert.deepEqual(frameTimes({ duration: 6, continuity: "continue" }, 1, 2).map((f) => [f.at, f.shared]), [[0, true], [2, false], [4, false], [6, false]]);
+  assert.equal(frameTimes({ duration: 6, continuity: "cut" }, 1, 2)[0].shared, false);
+});

@@ -296,6 +296,37 @@ export function createApp({ root, ltx = new LtxClient(), mediaLib = media, fetch
   // Do roteiro ao filme: gera o que falta em todas as cenas, une tudo e escreve o relatório.
   route("POST", "/api/projects/:id/film", ({ id, body }) => queue.addFilm(id, { missing: body.missing !== false, quality: body.quality }));
   route("POST", "/api/projects/:id/characters/:cid/references", ({ id, cid }) => queue.addCharsheet(id, cid));
+  // Storyboard de uma cena (ou de todas): quadros descritos pela IA, desenhados e conferidos.
+  route("POST", "/api/projects/:id/storyboard", ({ id, body }) => {
+    const project = store.get(id);
+    const scenes = body.sceneId ? [findScene(project, body.sceneId)] : project.scenes;
+    const added = [];
+    const skipped = [];
+    for (const scene of scenes) {
+      try {
+        added.push(queue.addStoryboard(id, scene.id, { redo: Boolean(body.redo) }));
+      } catch (error) {
+        skipped.push({ sceneId: scene.id, title: scene.title, reason: error.message });
+      }
+    }
+    return { added, skipped };
+  });
+  // Refaz um quadro: descarta a imagem (e, se vier, troca a descrição) e põe o storyboard da cena na fila.
+  route("POST", "/api/projects/:id/scenes/:sid/blocks/:kid/frames/:fid/redo", ({ id, sid, kid, fid, body }) => {
+    const updated = store.update(id, (p) => {
+      const f = findScene(p, sid).blocks.find((b) => b.id === kid)?.frames?.find((x) => x.id === fid);
+      if (!f || f.shared) throw Object.assign(new Error("Quadro não encontrado."), { status: 404 });
+      Object.assign(f, { imageId: null, status: "pending", judge: null });
+      if (typeof body.description === "string" && body.description.trim()) f.description = body.description.trim().slice(0, 2000);
+    });
+    let job = null;
+    try {
+      job = queue.addStoryboard(id, sid);
+    } catch {
+      /* o storyboard da cena já está na fila e vai desenhar o quadro */
+    }
+    return { project: view(updated), job };
+  });
   route("POST", "/api/projects/:id/generate-all", ({ id, body }) => queue.addAllScenes(id, { missing: Boolean(body.missing), quality: body.quality }));
   route("GET", "/api/projects/:id/scenes/:sid/playlist", ({ id, sid }) => {
     const project = store.get(id);

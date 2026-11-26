@@ -70,10 +70,12 @@ const MODE_HINT = {
     "The attached image is the last frame of the previous shot and the opening frame of this one. Continue the action from it, preserving setting, layout, lighting and character appearance.",
   image:
     "Use the attached image as the opening frame. Preserve its setting, layout, lighting and character appearance while animating the action.",
+  storyboard:
+    "The attached keyframes are frames of this shot at fixed times. Move smoothly and naturally from one to the next, keeping the characters, the place, the state and the lighting exactly as they appear in them.",
 };
 
 export function videoPrompt(project, scene, block, { mode, hasImage = false }) {
-  const hint = mode === "continue" ? MODE_HINT.continue : mode === "frame" ? MODE_HINT.frame : hasImage ? MODE_HINT.image : "";
+  const hint = mode === "storyboard" ? MODE_HINT.storyboard : mode === "continue" ? MODE_HINT.continue : mode === "frame" ? MODE_HINT.frame : hasImage ? MODE_HINT.image : "";
   return [clean(project.prePrompt), notes(project), setting(project, scene, block), current(block), cast(sceneCharacters(project, scene, block)), clean(block.prompt), hint]
     .filter(Boolean)
     .join("\n\n");
@@ -94,6 +96,24 @@ export function keyframePrompt(project, scene, block) {
     .filter(Boolean)
     .join("\n\n");
 }
+
+// Quadro do storyboard: uma imagem estática do plano, que depois vira keyframe do vídeo.
+export function framePrompt(project, scene, block, frame) {
+  return [
+    clean(project.prePrompt),
+    notes(project),
+    setting(project, scene, block),
+    current(block),
+    cast(sceneCharacters(project, scene, block)),
+    clean(frame.description),
+    "Single still frame from a film shot, cinematic composition, sharp, no motion blur, no text, no split screen.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+// Imagens do storyboard em alta definição (estáticas saem rápido): lado menor de 1088 px.
+export const STORYBOARD_SHORT_SIDE = 1088;
 
 export function previewPrompt(project, scene, extra, { withCharacters = true } = {}) {
   const body = clean(extra) || clean(scene?.blocks?.[0]?.prompt) || clean(scene?.synopsis);

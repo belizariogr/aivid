@@ -30,7 +30,7 @@ export function clampDuration(value) {
 }
 
 export function defaultSettings() {
-  return { resolution: "720p", draftResolution: "360p", aspectRatio: "16:9", fps: 24, seed: null, audio: false, contextSeconds: 2, review: false, judge: false, retakes: 2, learn: true };
+  return { resolution: "720p", draftResolution: "360p", aspectRatio: "16:9", fps: 24, seed: null, audio: false, contextSeconds: 2, review: false, judge: false, retakes: 2, learn: true, storyboard: false, frameEvery: 2 };
 }
 
 export function normalizeSettings(s = {}) {
@@ -52,6 +52,9 @@ export function normalizeSettings(s = {}) {
     retakes: Math.min(MAX_RETAKES, Math.max(0, Math.round(Number(s.retakes ?? d.retakes)) || 0)),
     // A revisão e o ajuste antes do retake podem anotar aprendizados que valem para todo o projeto.
     learn: s.learn === undefined ? d.learn : Boolean(s.learn),
+    // Storyboard: o vídeo de cada bloco passa pelos quadros aprovados (keyframes do LTX).
+    storyboard: Boolean(s.storyboard),
+    frameEvery: [2, 3, 4, 5, 10].includes(Number(s.frameEvery)) ? Number(s.frameEvery) : d.frameEvery,
   };
 }
 
@@ -90,6 +93,41 @@ function keepKeyframe(start, old, sameOpening = true) {
   return { ...start, id: keep ? old.id ?? null : null };
 }
 
+// Tempos dos quadros do storyboard de um bloco: o início, um a cada `every` segundos e o fim
+// (no máximo 10, o limite do LTX).
+// Num bloco que continua o mesmo plano, o primeiro quadro é o último do bloco anterior (`shared`).
+export const MAX_FRAMES = 10; // limite de keyframes do LTX por geração
+export function frameTimes(block, index, every = 2) {
+  const duration = Number(block.duration) || 5;
+  let times = [0];
+  for (let t = every; t < duration - every / 2; t += every) times.push(t);
+  times.push(duration);
+  // Acima do limite do LTX, os quadros ficam distribuídos por igual do início ao fim.
+  if (times.length > MAX_FRAMES) times = Array.from({ length: MAX_FRAMES }, (_, k) => Math.round(((duration * k) / (MAX_FRAMES - 1)) * 10) / 10);
+  const shared = index > 0 && block.continuity !== "cut";
+  return times.map((at, i) => ({ at, shared: i === 0 && shared }));
+}
+
+// Quadros do storyboard: a descrição é editável; imagem, julgamento e estado são do servidor.
+// Mudar a descrição descarta a imagem (ela precisa ser gerada de novo).
+export function normalizeFrames(list, previous = []) {
+  const old = new Map((previous ?? []).map((f) => [f.id, f]));
+  return (Array.isArray(list) ? list : []).slice(0, 10).map((f) => {
+    const before = old.get(f?.id);
+    const description = str(f?.description ?? before?.description ?? "", 2000);
+    const keep = before && before.description === description;
+    return {
+      id: before?.id ?? (typeof f?.id === "string" && f.id ? f.id : newId()),
+      at: Math.max(0, Number(f?.at ?? before?.at) || 0),
+      shared: Boolean(f?.shared ?? before?.shared),
+      description,
+      imageId: keep ? before.imageId ?? null : before ? null : f?.imageId ?? null,
+      status: keep ? before.status ?? "pending" : before ? "pending" : f?.status ?? "pending",
+      judge: keep ? before.judge ?? null : null,
+    };
+  });
+}
+
 export function normalizeBlock(b = {}, previous) {
   const takes = previous?.takes ?? [];
   const selected = takes.some((t) => t.id === b.selectedTakeId) ? b.selectedTakeId : previous?.selectedTakeId ?? null;
@@ -110,6 +148,7 @@ export function normalizeBlock(b = {}, previous) {
     currentState: str(plan.currentState, 2000),
     // Descrição do quadro de abertura, usada quando a abertura é gerada pelo Z-Image.
     opening: str(plan.opening, 4000),
+    frames: normalizeFrames(b.frames ?? previous?.frames, previous?.frames),
     review,
     characterIds: b.characterIds == null ? null : ids(b.characterIds),
     takes,
@@ -358,6 +397,23 @@ export function blockState(scene, index, project = null, seen = new Set()) {
   }
   if (!fs.existsSync(take.file)) return "missing";
   return "ready";
+}
+
+// Quadros do storyboard de um bloco com o arquivo de cada um. Um quadro compartilhado usa o
+// último quadro do bloco anterior. `file` é null enquanto a imagem não existe.
+export function storyboardFrames(project, scene, index) {
+  const block = scene.blocks[index];
+  const fileOf = (f) => {
+    const file = f?.imageId ? project.previews.find((p) => p.id === f.imageId)?.file ?? null : null;
+    return file && fs.existsSync(file) ? file : null;
+  };
+  return (block?.frames ?? []).map((f) => {
+    if (f.shared && index > 0) {
+      const last = scene.blocks[index - 1].frames?.at(-1);
+      return { ...f, description: last?.description ?? f.description, file: fileOf(last), status: last?.status ?? "pending", source: last ?? null };
+    }
+    return { ...f, file: fileOf(f) };
+  });
 }
 
 export function slug(text, fallback = "item") {

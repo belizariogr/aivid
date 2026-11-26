@@ -864,3 +864,57 @@ test("the AI writes project notes that go into every later prompt", { skip: !ffm
   await waitIdle(queue);
   assert.equal(store.get(p.id).memory.length, 0);
 });
+
+test("storyboard: the AI describes frames, images are drawn and checked, and the video passes through them", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  const checks = [];
+  const reviewer = {
+    async planStoryboard({ layout }) {
+      return {
+        blocks: layout.map((frames, index) => ({
+          index,
+          prompt: index === 0 ? "Teca walks to the gate and opens it." : null,
+          frames: frames.filter((f) => !f.shared).map((f) => ({ at: f.at, description: `frame ${index + 1} at ${f.at}` })),
+        })),
+      };
+    },
+    async checkFrame({ frame }) {
+      checks.push(frame.description);
+      // O primeiro desenho do quadro final do bloco 1 é recusado, com a descrição corrigida.
+      if (frame.description === "frame 1 at 12") return { pass: false, problems: ["portão fechado"], reason: "estado errado", description: "frame 1 at 12, the gate wide open", prompt: null, memory: { add: [], remove: [] }, model: "Fake" };
+      return { pass: true, problems: [], reason: "ok", description: null, prompt: null, memory: { add: [], remove: [] }, model: "Fake" };
+    },
+  };
+  const queue = new JobQueue({ store, ltx, reviewer });
+  const p = store.create("Storyboard");
+  store.edit(p.id, {
+    outputDir: path.join(root, "out"),
+    settings: { storyboard: true, frameEvery: 5 },
+    scenes: [{ id: "s", title: "Portão", blocks: [{ id: "a", prompt: "a", duration: 12 }, { id: "b", prompt: "b", duration: 4, continuity: "continue" }] }],
+  });
+  queue.addFilm(p.id);
+  await waitIdle(queue);
+  for (const j of queue.jobs) assert.equal(j.status, "complete", `${j.title}: ${j.error} ${JSON.stringify(j.warnings)}`);
+  const scene = store.get(p.id).scenes[0];
+  // Bloco 1: 0 s, 5 s e 12 s. Bloco 2 (mesmo plano): o 0 s é o fim do bloco 1, mais o 4 s.
+  assert.deepEqual(scene.blocks[0].frames.map((f) => [f.at, f.shared, f.status]), [[0, false, "approved"], [5, false, "approved"], [12, false, "approved"]]);
+  assert.deepEqual(scene.blocks[1].frames.map((f) => [f.at, f.shared]), [[0, true], [4, false]]);
+  assert.equal(scene.blocks[1].frames[1].status, "approved");
+  assert.equal(scene.blocks[0].prompt, "Teca walks to the gate and opens it.");
+  assert.equal(scene.blocks[0].frames[2].description, "frame 1 at 12, the gate wide open");
+  assert.deepEqual(checks, ["frame 1 at 0", "frame 1 at 5", "frame 1 at 12", "frame 1 at 12, the gate wide open", "frame 2 at 4"]);
+  const images = ltx.calls.filter((c) => c[0] === "image").map((c) => c[1]);
+  assert.equal(images.length, 5, "4 quadros + 1 redesenho");
+  assert.deepEqual([images[0].width, images[0].height], [1920, 1088]);
+  assert.ok(images[1].imagePath, "cada quadro parte do anterior");
+  const videos = ltx.calls.filter((c) => c[0] === "generate").map((c) => c[1]);
+  assert.equal(videos.length, 2);
+  assert.deepEqual(videos[0].keyframes.map((k) => k.frameIndex), [0, 120, 288]);
+  assert.equal(videos[0].imagePath, undefined);
+  assert.deepEqual(videos[1].keyframes.map((k) => k.frameIndex), [0, 96]);
+  assert.equal(videos[1].keyframes[0].imagePath, videos[0].keyframes[2].imagePath, "os blocos se emendam pelo mesmo quadro");
+  assert.match(videos[0].prompt, /attached keyframes/);
+  assert.equal(selectedTake(scene.blocks[0]).mode, "storyboard");
+});

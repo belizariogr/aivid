@@ -9,8 +9,8 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { newId, findScene, selectedTake, slug, blockState, MAX_NOTES } from "./store.js";
-import { videoPrompt, previewPrompt, avatarPrompt, keyframePrompt, referencePrompt, REFERENCE_VIEWS, imageSize } from "./prompts.js";
+import { newId, findScene, selectedTake, slug, blockState, MAX_NOTES, frameTimes, storyboardFrames } from "./store.js";
+import { videoPrompt, previewPrompt, avatarPrompt, keyframePrompt, referencePrompt, framePrompt, STORYBOARD_SHORT_SIDE, REFERENCE_VIEWS, imageSize } from "./prompts.js";
 import { renderDuration } from "./ltx.js";
 import * as media from "./media.js";
 
@@ -253,6 +253,14 @@ export class JobQueue {
     const added = [];
     const skipped = [];
     for (const scene of project.scenes) {
+      // No modo storyboard, cada cena tem o storyboard completado antes do vídeo.
+      if (project.settings.storyboard) {
+        try {
+          this.addStoryboard(projectId, scene.id);
+        } catch {
+          /* já na fila */
+        }
+      }
       try {
         added.push(this.addScene(projectId, scene.id, { missing, quality }));
       } catch (error) {
@@ -330,6 +338,7 @@ export class JobQueue {
         if (job.kind === "video") await this.runVideo(job);
         else if (job.kind === "film") await this.runFilm(job);
         else if (job.kind === "charsheet") await this.runCharsheet(job);
+        else if (job.kind === "storyboard") await this.runStoryboard(job);
         else if (job.result) {
           /* recuperada: já terminou */
         } else if (job.kind === "preview") await this.runPreview(job);
@@ -565,6 +574,7 @@ export class JobQueue {
     else if (inf.type === "avatar") out = await this.finishAvatar(job, inf, resultPath);
     else if (inf.type === "keyframe") out = await this.finishKeyframe(job, inf, resultPath);
     else if (inf.type === "charsheet") out = await this.finishCharsheet(job, inf, resultPath);
+    else if (inf.type === "frame") out = await this.finishFrame(job, inf, resultPath);
     job.inflight = null;
     this.changed();
     return out;
@@ -835,7 +845,11 @@ export class JobQueue {
     const quality = job.quality ?? "draft";
     const resolution = quality === "final" ? s.resolution : s.draftResolution ?? s.resolution;
     const prev = index > 0 ? takeFor(scene.blocks[index - 1], quality) : null;
-    const mode = index === 0 ? "start" : block.continuity;
+    // Modo storyboard: o vídeo passa pelos quadros do storyboard (keyframes), sem extend.
+    const board = s.storyboard ? storyboardFrames(project, scene, index) : [];
+    const useBoard = board.length >= 2 && board.every((f) => f.file);
+    if (s.storyboard && !useBoard) throw Object.assign(fatal(`O bloco ${index + 1} ainda não tem o storyboard completo. Gere o storyboard da cena antes do vídeo.`), { pending: true });
+    const mode = useBoard ? "storyboard" : index === 0 ? "start" : block.continuity;
     if ((mode === "continue" || mode === "frame") && !prev)
       throw fatal(`O bloco ${index} ainda não foi gerado${quality === "final" ? " na versão final" : ""}. Gere os blocos anteriores primeiro.`);
     if ((mode === "continue" || mode === "frame") && !fs.existsSync(prev.file))
@@ -877,7 +891,33 @@ export class JobQueue {
     };
     let result;
 
-    if (mode === "continue") {
+    if (mode === "storyboard") {
+      const allowed = await this.ltx.durations(resolution, s.fps);
+      const renderDur = renderDuration(block.duration, allowed);
+      const last = Math.floor((renderDur * s.fps) / 8) * 8;
+      const used = new Set();
+      const keyframes = board.map((f) => {
+        let at = Math.min(last, Math.round(Math.min(f.at, block.duration) * s.fps));
+        while (used.has(at) && at > 0) at--;
+        used.add(at);
+        return { imagePath: f.file, frameIndex: at, strength: 1 };
+      });
+      inflight.usedImage = board[0].file;
+      inflight.request = {
+        prompt: videoPrompt(project, scene, block, { mode }),
+        promptProvenance: "enhanced",
+        negativePrompt: project.negativePrompt || "",
+        resolution,
+        model: "fast",
+        duration: renderDur,
+        fps: s.fps,
+        audio: s.audio,
+        aspectRatio: s.aspectRatio,
+        ...(s.seed != null ? { seed: (s.seed + index + retake * 7919) % 2147483647 } : {}),
+        keyframes,
+      };
+      result = await this.withLtx(job, `${label}: gerando no LTX pelo storyboard (${keyframes.length} quadros)`, inflight, () => this.ltx.generateVideo(inflight.request, { signal }));
+    } else if (mode === "continue") {
       job.phase = `${label}: preparando a continuação`;
       this.changed();
       const info = await this.media.probe(prev.file);
@@ -1070,6 +1110,14 @@ export class JobQueue {
     const added = [];
     const skipped = [];
     for (const scene of project.scenes) {
+      // No modo storyboard, cada cena tem o storyboard completado antes do vídeo.
+      if (project.settings.storyboard) {
+        try {
+          this.addStoryboard(projectId, scene.id);
+        } catch {
+          /* já na fila */
+        }
+      }
       try {
         added.push(this.addScene(projectId, scene.id, { missing, quality }));
       } catch (error) {
@@ -1150,6 +1198,164 @@ export class JobQueue {
       c.refs = [...(c.refs ?? []).filter((r) => r.view !== inf.view), { view: inf.view, file, createdAt: new Date().toISOString() }];
     });
     if (!job.done.includes(inf.view)) job.done.push(inf.view);
+    return file;
+  }
+
+  // Storyboard da cena: a IA descreve os quadros de cada bloco, o Z-Image desenha cada um em alta
+  // definição e a IA confere cada imagem (refaz com a descrição corrigida até 3 vezes). O vídeo
+  // depois passa por esses quadros.
+  addStoryboard(projectId, sceneId, { redo = false } = {}) {
+    const scene = findScene(this.store.get(projectId), sceneId);
+    if (this.jobs.some((j) => ACTIVE.includes(j.status) && j.kind === "storyboard" && j.sceneId === sceneId))
+      throw Object.assign(new Error("O storyboard desta cena já está na fila."), { status: 409 });
+    return this.add({ kind: "storyboard", projectId, sceneId, redo, title: `🎞 Storyboard · ${scene.title}` });
+  }
+
+  async runStoryboard(job) {
+    let project = this.store.get(job.projectId);
+    requireOutput(project);
+    let scene = findScene(project, job.sceneId);
+    const every = project.settings.frameEvery ?? 2;
+    const layout = scene.blocks.map((b, i) => frameTimes(b, i, every));
+    const matches = (frames, want) => frames?.length === want.length && want.every((w, k) => Math.abs(frames[k].at - w.at) < 0.01 && frames[k].shared === w.shared && (w.shared || frames[k].description));
+    if (!job.planned && (job.redo || scene.blocks.some((b, i) => !matches(b.frames, layout[i])))) {
+      if (!this.reviewer?.planStoryboard) throw fatal("Escolha o modelo do roteiro em Configurações para planejar o storyboard.");
+      job.phase = `Storyboard de "${scene.title}": a IA está descrevendo os quadros`;
+      this.changed();
+      const plan = await this.reviewer.planStoryboard({ project, scene, layout, signal: job.abort?.signal });
+      this.store.update(job.projectId, (p) => {
+        const sc = findScene(p, job.sceneId);
+        sc.blocks.forEach((b, i) => {
+          const got = plan.blocks.find((x) => x.index === i);
+          if (got?.prompt) b.prompt = got.prompt;
+          b.frames = layout[i].map((w) => {
+            const old = (b.frames ?? []).find((f) => Math.abs(f.at - w.at) < 0.01);
+            const description = w.shared ? "" : got?.frames.find((f) => Math.abs(f.at - w.at) < 0.5)?.description ?? old?.description ?? "";
+            const same = old && old.description === description && !job.redo;
+            return { id: old?.id ?? newId(), at: w.at, shared: w.shared, description, imageId: same ? old.imageId ?? null : null, status: same ? old.status ?? "pending" : "pending", judge: same ? old.judge ?? null : null };
+          });
+        });
+      });
+      job.planned = true;
+      this.changed();
+    }
+    // Imagens, na ordem do filme: cada quadro parte do anterior.
+    project = this.store.get(job.projectId);
+    scene = findScene(project, job.sceneId);
+    const total = scene.blocks.reduce((n, b) => n + (b.frames ?? []).filter((f) => !f.shared).length, 0);
+    let n = 0;
+    for (let i = 0; i < scene.blocks.length; i++) {
+      for (let j = 0; j < (scene.blocks[i].frames ?? []).length; j++) {
+        if (job.cancelRequested) return;
+        if (scene.blocks[i].frames[j].shared) continue;
+        n++;
+        job.progress = Math.round(((n - 1) / Math.max(1, total)) * 100);
+        await this.drawFrame(job, scene.blocks[i].id, scene.blocks[i].frames[j].id, `Storyboard de "${scene.title}" · quadro ${n} de ${total}`);
+        project = this.store.get(job.projectId);
+        scene = findScene(project, job.sceneId);
+      }
+    }
+    job.phase = `Storyboard de "${scene.title}" pronto`;
+  }
+
+  // Imagem de referência do quadro: o quadro anterior (mesmo plano), a abertura da cena ou o fundo.
+  frameReference(project, scene, index, frameIndex) {
+    const board = storyboardFrames(project, scene, index);
+    const prev = frameIndex > 0 ? board[frameIndex - 1] : index > 0 ? storyboardFrames(project, scene, index - 1).at(-1) : null;
+    const block = scene.blocks[index];
+    if (prev?.file) return { file: prev.file, strength: frameIndex === 0 && block.continuity === "cut" ? 0.85 : 0.6, prev: prev.file };
+    if (index === 0 && scene.start?.kind === "previous") {
+      const at = project.scenes.findIndex((x) => x.id === scene.id);
+      const before = project.scenes[at - 1];
+      const last = before?.blocks.length ? storyboardFrames(project, before, before.blocks.length - 1).at(-1)?.file : null;
+      if (last) return { file: last, strength: 0.6, prev: last };
+    }
+    const bg = project.backgrounds.find((b) => b.id === scene.backgroundId)?.image;
+    return bg && fs.existsSync(bg) ? { file: bg, strength: 0.75, prev: null } : { file: null, strength: 0, prev: null };
+  }
+
+  async drawFrame(job, blockId, frameId, label) {
+    const signal = job.abort.signal;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (job.cancelRequested) return;
+      const project = this.store.get(job.projectId);
+      const scene = findScene(project, job.sceneId);
+      const index = scene.blocks.findIndex((b) => b.id === blockId);
+      const block = scene.blocks[index];
+      const fi = block.frames.findIndex((f) => f.id === frameId);
+      const frame = block.frames[fi];
+      if (!frame) return;
+      const current = storyboardFrames(project, scene, index)[fi];
+      if (current.file && frame.status !== "pending") return; // já desenhado e conferido
+      const ref = this.frameReference(project, scene, index, fi);
+      let file = current.file && frame.status === "pending" && attempt === 1 ? current.file : null;
+      if (!file) {
+        const short = STORYBOARD_SHORT_SIDE;
+        const request = {
+          prompt: framePrompt(project, scene, block, frame),
+          ...imageSize(project.settings.aspectRatio, short),
+          numImages: 1,
+          ...(ref.file ? { imagePath: ref.file, strength: ref.strength } : {}),
+        };
+        const inflight = { type: "frame", request, blockId, frameId, index, at: frame.at, sceneTitle: scene.title };
+        const result = await this.withLtx(job, `${label} (${frame.at} s do bloco ${index + 1})${attempt > 1 ? `, tentativa ${attempt}` : ""}`, inflight, () => this.ltx.generateImage(request, { signal }));
+        if (job.cancelRequested || result?.status !== "complete") return;
+        if (!result.image_paths?.[0]) throw new Error("O LTX não devolveu a imagem do quadro.");
+        file = await this.finish(job, result.image_paths[0]);
+      }
+      if (!this.reviewer?.checkFrame) return this.setFrame(job, blockId, frameId, { status: "approved" });
+      job.phase = `${label}: a IA está conferindo o quadro`;
+      this.changed();
+      let v;
+      try {
+        const fresh = this.store.get(job.projectId);
+        const sc = findScene(fresh, job.sceneId);
+        const work = path.join(sceneFolder(fresh, sc), ".trabalho");
+        await fsp.mkdir(work, { recursive: true });
+        v = await this.reviewer.checkFrame({ project: fresh, scene: sc, index, frame: sc.blocks[index].frames[fi], file, prevFile: ref.prev, work, signal });
+      } catch (error) {
+        if (error.code === "ABORTED" || signal.aborted) return;
+        (job.warnings ??= []).push(`Quadro ${frame.at} s do bloco ${index + 1}: a conferência falhou (${error.message}); ficou sem conferir.`);
+        return this.setFrame(job, blockId, frameId, { status: "approved" });
+      }
+      this.learn(job, v.memory, `IA · storyboard de ${scene.title}, bloco ${index + 1}`);
+      const judge = { pass: v.pass, problems: v.problems, reason: v.reason, model: v.model, at: new Date().toISOString(), attempt };
+      (job.judged ??= []).push({ blockIndex: index, pass: v.pass, frame: frame.at });
+      if (v.pass) return this.setFrame(job, blockId, frameId, { status: "approved", judge });
+      if (attempt === 3) {
+        (job.warnings ??= []).push(`Quadro ${frame.at} s do bloco ${index + 1}: reprovado 3 vezes (${v.reason}); ficou o último. Refaça na aba Storyboard se precisar.`);
+        return this.setFrame(job, blockId, frameId, { status: "rejected", judge });
+      }
+      // Reprovado: a próxima imagem sai da descrição corrigida (e do prompt do bloco, se a IA mudou).
+      this.setFrame(job, blockId, frameId, { status: "pending", judge, imageId: null, ...(v.description ? { description: v.description } : {}) }, v.prompt);
+    }
+  }
+
+  setFrame(job, blockId, frameId, patch, prompt = null) {
+    this.store.update(job.projectId, (p) => {
+      const b = findScene(p, job.sceneId).blocks.find((x) => x.id === blockId);
+      const f = b?.frames?.find((x) => x.id === frameId);
+      if (!f) return;
+      Object.assign(f, patch);
+      if (prompt) b.prompt = prompt;
+    });
+    this.changed();
+  }
+
+  async finishFrame(job, inf, source) {
+    const project = this.store.get(job.projectId);
+    requireOutput(project);
+    const dir = path.join(project.outputDir, "storyboard");
+    await fsp.mkdir(dir, { recursive: true });
+    const file = path.join(dir, `${slug(inf.sceneTitle, "cena")}-bloco-${pad(inf.index + 1)}-${String(inf.at).replace(".", "_")}s-${stamp()}${path.extname(source) || ".png"}`);
+    await fsp.copyFile(source, file);
+    const preview = { id: newId(), sceneId: job.sceneId, backgroundId: null, kind: "frame", blockId: inf.blockId, frameId: inf.frameId, prompt: inf.request.prompt, file, createdAt: new Date().toISOString() };
+    await fsp.writeFile(file.replace(/\.[^.]+$/, ".json"), JSON.stringify({ request: inf.request, createdAt: preview.createdAt }, null, 2));
+    this.store.update(job.projectId, (p) => {
+      p.previews.unshift(preview);
+      const f = findScene(p, job.sceneId).blocks.find((b) => b.id === inf.blockId)?.frames?.find((x) => x.id === inf.frameId);
+      if (f) Object.assign(f, { imageId: preview.id, status: "pending" });
+    });
     return file;
   }
 

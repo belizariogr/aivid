@@ -60,6 +60,7 @@ const TABS = [
   ["characters", "Personagens"],
   ["backgrounds", "Fundos"],
   ["scenes", "Cenas"],
+  ["storyboard", "Storyboard"],
   ["previews", "Prévias"],
   ["queue", "Fila"],
 ];
@@ -135,6 +136,9 @@ function absorb(server) {
       b.state = x.state;
       // A revisão de continuidade com IA pode ter mudado o bloco no servidor.
       if (x.review?.at && x.review.at !== b.review?.at) Object.assign(b, { review: x.review, continuity: x.continuity, start: x.start, prompt: x.prompt, note: x.note, currentState: x.currentState, opening: x.opening });
+      // Os quadros do storyboard (imagens, conferência e descrições corrigidas) vêm do servidor.
+      b.frames = x.frames ?? [];
+      if (x.prompt !== b.prompt && document.activeElement?.dataset?.bind !== `k.${s.id}.${b.id}.prompt`) b.prompt = x.prompt;
       // A imagem de abertura gerada é gravada pelo servidor.
       if (x.start?.kind === "keyframe" && b.start?.kind === "keyframe") b.start.id = x.start.id;
     }
@@ -151,7 +155,7 @@ function ownedSignature(p) {
     (p.memory ?? []).map((n) => n.id).join(","),
     p.backgrounds.map((b) => [b.id, b.image]),
     p.previews.map((x) => x.id),
-    p.scenes.map((s) => [s.id, s.start, s.blocks.map((b) => [b.id, b.selectedTakeId, b.state, b.takes.length, b.review?.at, b.start?.id, b.takes.map((t) => t.judge?.at)])]),
+    p.scenes.map((s) => [s.id, s.start, s.blocks.map((b) => [b.id, b.selectedTakeId, b.state, b.takes.length, b.review?.at, b.start?.id, b.takes.map((t) => t.judge?.at), (b.frames ?? []).map((f) => `${f.imageId}|${f.status}|${f.description.length}`)])]),
   ]);
 }
 
@@ -295,7 +299,7 @@ function projectView() {
     const badge = id === "queue" ? state.jobs.filter((j) => ["queued", "running"].includes(j.status)).length : 0;
     return `<button class="tab ${state.tab === id ? "active" : ""}" data-action="tab" data-tab="${id}">${label}${badge ? ` <span class="badge">${badge}</span>` : ""}</button>`;
   }).join("");
-  const body = { overview, characters, backgrounds, scenes, previews, queue }[state.tab]();
+  const body = { overview, characters, backgrounds, scenes, storyboard, previews, queue }[state.tab]();
   const film = state.jobs.find((j) => j.kind === "film" && j.projectId === p.id && ["queued", "running"].includes(j.status));
   return `<div class="project-head">
       <div class="project-title-row">
@@ -825,6 +829,78 @@ function blockCard(scene, b, i, t, running) {
       </div>
     </div>
   </article>`;
+}
+
+// ---------- storyboard ----------
+function frameFile(p, f) {
+  return f?.imageId ? p.previews.find((x) => x.id === f.imageId)?.file ?? null : null;
+}
+
+const FRAME_STATUS = { approved: ["✓", "aprovado", "ok"], rejected: ["✗", "reprovado", "bad"], pending: ["…", "a gerar", "warn"] };
+
+function storyboard() {
+  const p = state.project;
+  const s = p.settings;
+  const jobs = state.jobs.filter((j) => j.kind === "storyboard" && j.projectId === p.id && ["queued", "running"].includes(j.status));
+  const running = jobs.find((j) => j.status === "running");
+  const all = p.scenes.flatMap((sc) => sc.blocks.flatMap((b) => (b.frames ?? []).filter((f) => !f.shared)));
+  const done = all.filter((f) => f.status === "approved").length;
+  const sceneRows = p.scenes
+    .map((sc, si) => {
+      const blocks = sc.blocks
+        .map((b, i) => {
+          const frames = (b.frames ?? [])
+            .map((f, fi) => {
+              if (f.shared) {
+                const last = sc.blocks[i - 1]?.frames?.at(-1);
+                const file = frameFile(p, last);
+                return `<div class="frame shared" title="Mesmo quadro do fim do bloco ${i}">${file ? `<img src="${mediaUrl(file, file)}" alt="">` : `<div class="placeholder">fim do bloco ${i}</div>`}<small class="muted">0 s · = fim do bloco ${i}</small></div>`;
+              }
+              const file = frameFile(p, f);
+              const [icon, label, cls] = FRAME_STATUS[f.status] ?? FRAME_STATUS.pending;
+              return `<div class="frame">
+                  ${file ? `<a href="${mediaUrl(file, file)}" target="_blank"><img src="${mediaUrl(file, file)}" alt=""></a>` : `<div class="placeholder">${f.description ? "a desenhar" : "a descrever"}</div>`}
+                  <div class="row"><small><strong>${f.at} s</strong></small><span class="status ${cls === "ok" ? "ready" : cls === "bad" ? "error" : "queued"}" title="${esc(f.judge?.reason || "")}">${icon} ${label}</span><span class="grow"></span>
+                  <button class="btn icon" data-action="redo-frame" data-scene="${sc.id}" data-block="${b.id}" data-id="${f.id}" title="Refazer este quadro (dá para corrigir a descrição)">↻</button></div>
+                  <small class="frame-desc" title="${esc(f.description)}">${esc(f.description || "")}</small>
+                  ${f.status === "rejected" && f.judge?.reason ? `<small class="error">${esc(f.judge.reason)}</small>` : ""}
+                </div>`;
+            })
+            .join("");
+          return `<div class="sb-block">
+              <div class="sb-block-head"><span class="block-num">${i + 1}</span> <small class="muted">${b.duration} s · ${i === 0 ? "abre a cena" : CONTINUITY_LABEL[b.continuity]}</small> <small class="sb-prompt" title="${esc(b.prompt)}">${esc(b.prompt)}</small></div>
+              <div class="frames">${frames || `<p class="muted small">Sem quadros ainda.</p>`}</div>
+            </div>`;
+        })
+        .join("");
+      const queued = jobs.find((j) => j.sceneId === sc.id);
+      return `<section class="card sb-scene">
+          <div class="section-head">
+            <h3>Cena ${si + 1} · ${esc(sc.title)}</h3>
+            <div class="row">
+              ${queued ? `<span class="muted small">${queued.status === "running" ? esc(queued.phase || "gerando…") : "na fila"}</span>` : `<button class="btn small" data-action="storyboard-scene" data-scene="${sc.id}" title="Descreve, desenha e confere o que falta nesta cena">Gerar o que falta</button><button class="btn small ghost" data-action="storyboard-scene" data-scene="${sc.id}" data-redo="1" title="A IA descreve tudo de novo e os quadros são redesenhados">Replanejar</button>`}
+            </div>
+          </div>
+          ${blocks}
+        </section>`;
+    })
+    .join("");
+  return `<section class="card">
+      <div class="section-head">
+        <div>
+          <h3>Storyboard</h3>
+          <p class="hint">A IA descreve um quadro no início de cada bloco, um a cada ${s.frameEvery ?? 2} s e um no fim (no máximo 10 por bloco, o limite do LTX; acima disso ficam distribuídos por igual). O Z-Image desenha cada um em alta definição, partindo do anterior, e a IA confere e corrige até 3 vezes. Com o modo ligado, o vídeo de cada bloco passa exatamente por esses quadros, e os blocos se emendam pelo quadro em comum.</p>
+          <p class="hint">${all.length ? `${done} de ${all.length} quadros aprovados.` : "Nenhum quadro ainda."}${running ? ` · ${esc(running.phase || "")}` : ""}</p>
+        </div>
+        <button class="btn primary" data-action="storyboard-all" ${p.scenes.length && !jobs.length ? "" : "disabled"}>${jobs.length ? "Storyboard na fila…" : "🎞 Gerar storyboard"}</button>
+      </div>
+      <div class="row">
+        <label class="check"><input type="checkbox" data-bind="p.settings.storyboard" data-rerender="1" ${s.storyboard ? "checked" : ""}> Gerar os vídeos a partir do storyboard (keyframes)</label>
+        <label class="inline">Um quadro a cada <select data-bind="p.settings.frameEvery" data-type="number">${[2, 3, 4, 5, 10].map((n) => option(n, `${n} s`, s.frameEvery ?? 2)).join("")}</select></label>
+      </div>
+      ${s.storyboard ? `<p class="hint">Com o modo ligado, gerar o filme completa o storyboard de cada cena antes do vídeo dela.</p>` : ""}
+    </section>
+    ${sceneRows || `<p class="muted">Crie ou gere cenas para montar o storyboard.</p>`}`;
 }
 
 function previews() {
@@ -1436,6 +1512,29 @@ const actions = {
     if (quality === "final" && !confirm(`Gerar a versão final em ${state.project.settings.resolution}? Todos os blocos são gerados de novo com os prompts e aberturas atuais, sem revisão (o juiz continua, se estiver ligado).`)) return;
     await generateFilm(quality || "draft");
   },
+  async "storyboard-all"() {
+    await saveNow();
+    const p = state.project;
+    if (!p.outputDir) return toast("Escolha a pasta de saída do projeto antes de gerar.", "error");
+    const r = await api("POST", `/api/projects/${p.id}/storyboard`, {});
+    toast(`Storyboard de ${r.added.length} cena(s) na fila.`);
+  },
+  async "storyboard-scene"({ scene, redo }) {
+    if (redo && !confirm("Replanejar o storyboard desta cena? A IA descreve todos os quadros de novo e eles são redesenhados.")) return;
+    await saveNow();
+    await api("POST", `/api/projects/${state.project.id}/storyboard`, { sceneId: scene, redo: Boolean(redo) });
+    toast("Storyboard da cena na fila.");
+  },
+  async "redo-frame"({ scene, block, id }) {
+    const f = state.project.scenes.find((x) => x.id === scene)?.blocks.find((b) => b.id === block)?.frames?.find((x) => x.id === id);
+    const description = prompt("Descrição do quadro (em inglês). Corrija se quiser e confirme para redesenhar:", f?.description ?? "");
+    if (description === null) return;
+    await saveNow();
+    const r = await api("POST", `/api/projects/${state.project.id}/scenes/${scene}/blocks/${block}/frames/${id}/redo`, { description });
+    state.project = r.project;
+    render();
+    toast("O quadro vai ser redesenhado.");
+  },
   async "add-note"() {
     const text = prompt("Nota para todos os prompts (em inglês):", "");
     if (!text?.trim()) return;
@@ -1827,7 +1926,7 @@ async function openProject(id, data) {
   state.modal = null;
   state.previewForm = { sceneId: "", backgroundId: "", strength: 0.6, withCharacters: true, prompt: "" };
   state.llm = newLlmState();
-  if (!["overview", "characters", "backgrounds", "scenes", "previews", "queue"].includes(state.tab)) state.tab = "overview";
+  if (!["overview", "characters", "backgrounds", "scenes", "storyboard", "previews", "queue"].includes(state.tab)) state.tab = "overview";
   try {
     localStorage.setItem("takes:last", id);
   } catch {

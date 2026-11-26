@@ -8,7 +8,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { CONTINUITY_RULES, parseCutStart, extractJson } from "./llm.js";
-import { CONTINUITY, selectedTake } from "./store.js";
+import { CONTINUITY, selectedTake, storyboardFrames } from "./store.js";
 import { sceneCharacters } from "./prompts.js";
 import { ask, userMessage, PROVIDERS } from "./ai.js";
 
@@ -76,6 +76,26 @@ Reply with ONLY a JSON object, no text before or after it:
 // Rascunho em resolução baixa: julgar o conteúdo, não a definição.
 const DRAFT_NOTE = (resolution) =>
   `This take is a low-resolution DRAFT (${resolution}) used to validate the plan before the final render. Do not penalize what comes from the low resolution itself (softness, blur, lost fine detail, small noise, simplified textures). Judge what the final render will keep: whether the action happens, the characters are the right ones and recognizable, nobody is duplicated, melting or swapped, the state holds, the framing and the transition work.`;
+
+const STORYBOARD_SYSTEM = `You are the storyboard artist of a video made with LTX, a local text/image-to-video model, inside the Takes app. Before any video is rendered, an image model draws a few still frames of every block; LTX then renders the block passing exactly through those frames (they are pinned keyframes). The frames decide what the video shows, so they must be precise and consistent.
+
+For every block listed, write one description per frame time it asks for. A frame marked "shared" is the last frame of the previous block and is not yours to describe. Each description is one English paragraph for a single still image: the framing (shot size, angle, lens), where each character is in the frame (left, right, foreground, background) with pose, gesture and expression, the objects that matter and their visible state, and the light. Name the characters; their looks are added automatically from the project and the project notes, so do not repeat them, and follow the notes. Consecutive frames must be the same place and the same characters, with positions that change plausibly within the seconds between them; a "cut" block may change the angle but keeps the place, the moment and the state.
+
+You may also rewrite a block's "prompt" so the motion it describes goes from frame to frame in order (English, one paragraph of 3 to 7 sentences, present tense). Keep the story, the dialogue and the characters of the block.
+
+Reply with ONLY a JSON object, no text before or after it:
+{"blocks": [{"block": 1, "prompt": "optional rewritten prompt, or omit", "frames": [{"at": 0, "description": "..."}, {"at": 10, "description": "..."}]}]}`;
+
+const FRAME_SYSTEM = `You check one storyboard frame of a video made with LTX inside the Takes app. An image model drew it; it will be pinned as a keyframe of the video, so whatever is wrong in it will be wrong in the film. You see the frame, the previous frame of the storyboard (continuity), the background image of the place and reference photos of the characters.
+
+Pass the frame when it shows the described framing and action, the right characters looking like their references (species, colors, outfit, proportions), the place and the state described, nobody duplicated or deformed, no stray text, and it continues the previous frame plausibly. Small differences of detail pass.
+
+When it fails, rewrite the frame "description" so the next drawing gets it right: be more explicit about what went wrong (who is where, exact species and colors, what must not appear). If the block "prompt" contradicts the frames, give a corrected "prompt" too.
+
+${MEMORY_RULES}
+
+Reply with ONLY a JSON object, no text before or after it:
+{"pass": true or false, "problems": ["each problem in Brazilian Portuguese"], "reason": "one sentence in Brazilian Portuguese", "description": "rewritten English description (only when failing)", "prompt": "corrected block prompt (optional)", "memory": {"add": [], "remove": []} (optional)}`;
 
 const fail = (message) => Object.assign(new Error(message), { status: 422 });
 
@@ -187,8 +207,10 @@ export class ContinuityReviewer {
   }
 
   // Chama a LLM e valida a resposta; uma resposta inválida volta para ela corrigir uma vez.
-  async askJson(system, parts, parse, signal) {
-    const model = this.model();
+  // `use`: "review" (modelo do juiz e da revisão) ou "script" (modelo do roteiro).
+  async askJson(system, parts, parse, signal, { use = "review" } = {}) {
+    const d = this.settings.data;
+    const model = use === "script" ? (d.model && (this.settings.has?.(d.model.provider) ?? true) ? d.model : null) : this.model();
     if (!model) throw fail("escolha um modelo em Configurações");
     const resolved = await this.writer.resolveModel(model.provider, model.id);
     const key = this.settings.key(model.provider);
@@ -201,8 +223,8 @@ export class ContinuityReviewer {
         messages,
         signal,
         fetchImpl: this.fetch,
-        effort: this.settings.data.reviewEffort ?? "medium",
-        fast: Boolean(this.settings.data.reviewFast),
+        effort: use === "script" ? d.effort ?? "high" : d.reviewEffort ?? "medium",
+        fast: Boolean(use === "script" ? d.fast : d.reviewFast),
       });
       try {
         return { ...parse(extractJson(reply)), model: `${PROVIDERS[model.provider].name} · ${resolved.name || resolved.id}` };
@@ -278,6 +300,90 @@ export class ContinuityReviewer {
   async review({ project, scene, index, work, startImage = null, signal }) {
     const parts = await this.request(project, scene, index, work, { startImage, signal });
     return this.askJson(REVIEW_SYSTEM, parts, (data) => this.parse(project, scene, index, data), signal);
+  }
+
+  // ---------- storyboard ----------
+
+  // Descrições dos quadros de cada bloco da cena (e, se a IA quiser, prompts reescritos).
+  // `layout[i]`: [{ at, shared }] do bloco i. Devolve { blocks: [{ index, prompt?, frames: [{ at, description }] }] }.
+  async planStoryboard({ project, scene, layout, signal }) {
+    const plan = scene.blocks.map((b, i) => ({
+      block: i + 1,
+      duration: b.duration,
+      continuity: i === 0 ? "opens the scene" : b.continuity,
+      state: b.currentState || "",
+      prompt: b.prompt,
+      frames: layout[i].map((f) => (f.shared ? { at: f.at, shared: true } : { at: f.at })),
+    }));
+    const parts = [
+      {
+        text: [
+          this.projectText(project, scene),
+          `Scene "${scene.title}". Opening: ${scene.start?.kind ?? "none"}.`,
+          "Blocks and the frame times to describe:",
+          JSON.stringify(plan, null, 2),
+        ].join("\n"),
+      },
+    ];
+    return this.askJson(
+      STORYBOARD_SYSTEM,
+      parts,
+      (data) => {
+        const errors = [];
+        const blocks = (Array.isArray(data.blocks) ? data.blocks : []).map((b) => {
+          const index = Number(b.block) - 1;
+          if (!scene.blocks[index]) {
+            errors.push(`bloco ${b.block} não existe`);
+            return null;
+          }
+          const frames = (Array.isArray(b.frames) ? b.frames : []).map((f) => ({ at: Number(f.at), description: text(f.description) }));
+          for (const want of layout[index].filter((f) => !f.shared))
+            if (!frames.some((f) => Math.abs(f.at - want.at) < 0.5 && f.description)) errors.push(`bloco ${index + 1}: falta a descrição do quadro em ${want.at} s`);
+          return { index, prompt: text(b.prompt) || null, frames };
+        });
+        if (errors.length) throw Object.assign(fail(errors.join("; ")), { details: errors });
+        return { blocks: blocks.filter(Boolean) };
+      },
+      signal,
+      { use: "script" },
+    );
+  }
+
+  // Confere um quadro do storyboard. Devolve { pass, problems, reason, description?, prompt?, memory }.
+  async checkFrame({ project, scene, index, frame, file, prevFile, work, signal }) {
+    const block = scene.blocks[index];
+    const m = this.parts(work, signal);
+    m.text(
+      [
+        this.projectText(project, scene),
+        `Block ${index + 1} of the scene, frame at ${frame.at} s of ${block.duration} s.`,
+        `Frame description: ${frame.description}`,
+        `State that must show: ${block.currentState || "(nothing differs from the background)"}`,
+        `Block prompt: ${block.prompt}`,
+      ].join("\n"),
+    );
+    if (prevFile) await m.image("Previous storyboard frame:", prevFile);
+    await m.image("Frame to check:", file);
+    const bg = project.backgrounds.find((b) => b.id === scene.backgroundId);
+    if (bg?.image) await m.image(`Background "${bg.name}" (the place, original state):`, bg.image);
+    await this.characterImages(m, project, scene, block);
+    m.text("Check the frame now and reply with the JSON.");
+    return this.askJson(
+      FRAME_SYSTEM,
+      m.parts,
+      (data) => {
+        if (typeof data.pass !== "boolean") throw fail('"pass" precisa ser true ou false.');
+        return {
+          pass: data.pass,
+          problems: Array.isArray(data.problems) ? data.problems.filter((p) => typeof p === "string") : [],
+          reason: text(data.reason),
+          description: data.pass ? null : text(data.description) || null,
+          prompt: text(data.prompt) || null,
+          memory: readMemory(project, data.memory),
+        };
+      },
+      signal,
+    );
   }
 
   // ---------- depois de um take reprovado ----------
@@ -360,6 +466,9 @@ export class ContinuityReviewer {
     if (prev) await m.image(`Last frame of the previous block (${index}):`, prev.file, { last: true });
     if (take.startImage) await m.image("Opening image used for this take:", take.startImage);
     await this.takeFrames(m, take, info, "Rendered take");
+    if (take.mode === "storyboard")
+      for (const f of storyboardFrames(project, scene, index).filter((x) => x.file))
+        await m.image(`Approved storyboard frame at ${f.at} s that the take had to pass through:`, f.file);
     await this.characterImages(m, project, scene, block);
     m.text("Judge the take now and reply with the JSON.");
     return this.askJson(
