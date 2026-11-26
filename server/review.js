@@ -73,6 +73,10 @@ ${MEMORY_RULES} A rejected take is the best moment to learn: if the failure woul
 Reply with ONLY a JSON object, no text before or after it:
 {"decision": "keep" or "change", "memory": {"add": ["new note"], "remove": ["note id"]} (optional), "continuity": "continue" | "frame" | "cut", "start": "keyframe" | "block:N" | "scene" | "background:<id>" | "none" (only when "continuity" is "cut"), "reference": "scene" | "block:N" | "background:<id>" | "none" (only with "keyframe"), "opening": "English description of the first frame (only with keyframe)", "regenerateOpening": true or false, "state": "current state in English, or empty", "prompt": "the full prompt for the next take", "note": "continuity note for the editor, in Brazilian Portuguese", "reason": "one or two sentences in Brazilian Portuguese: what went wrong and what you changed"}`;
 
+// Rascunho em resolução baixa: julgar o conteúdo, não a definição.
+const DRAFT_NOTE = (resolution) =>
+  `This take is a low-resolution DRAFT (${resolution}) used to validate the plan before the final render. Do not penalize what comes from the low resolution itself (softness, blur, lost fine detail, small noise, simplified textures). Judge what the final render will keep: whether the action happens, the characters are the right ones and recognizable, nobody is duplicated, melting or swapped, the state holds, the framing and the transition work.`;
+
 const fail = (message) => Object.assign(new Error(message), { status: 422 });
 
 function refLabel(scene, ref) {
@@ -293,6 +297,7 @@ export class ContinuityReviewer {
         `Problems: ${(verdict.problems ?? []).join(" | ") || "(none listed)"}`,
       ].join("\n"),
     );
+    if (take.quality !== "final" && take.resolution) m.text(DRAFT_NOTE(take.resolution));
     const prev = index > 0 ? selectedTake(scene.blocks[index - 1]) : null;
     if (prev) await m.image(`Last frame of the previous block (${index}):`, prev.file, { last: true });
     if (take.startImage) await m.image("Opening image used for the rejected take:", take.startImage);
@@ -346,6 +351,7 @@ export class ContinuityReviewer {
         `State that must hold: ${block.currentState || "(nothing differs from the background)"}`,
         `Prompt of the block: ${block.prompt}`,
         index > 0 ? `Previous block prompt: ${scene.blocks[index - 1].prompt}` : "",
+        take.quality !== "final" && take.resolution ? DRAFT_NOTE(take.resolution) : "",
       ]
         .filter(Boolean)
         .join("\n"),

@@ -264,11 +264,12 @@ test("the judge sees the take, the previous block and the character references",
     media,
     fetchImpl,
   });
-  const v = await reviewer.judge({ project, scene, index: 1, take: scene.blocks[1].takes[0], work: dir });
+  const v = await reviewer.judge({ project, scene, index: 1, take: { ...scene.blocks[1].takes[0], quality: "draft", resolution: "360p" }, work: dir });
   assert.deepEqual([v.pass, v.score, v.problems], [false, 4, ["O portão aparece fechado."]]);
   assert.deepEqual(stills, [["t1.mp4", "last"], ["t2.mp4", 0], ["t2.mp4", 2], ["t2.mp4", "last"], ["teca.png", "image"], ["teca-body.png", "image"]]);
   assert.match(bodies[0].messages[0].content[0].text, /State that must hold: The gate is open\./);
   assert.match(bodies[0].system, /quality judge/);
+  assert.match(bodies[0].messages[0].content[0].text, /low-resolution DRAFT \(360p\)/);
 });
 
 test("the stream reports that the model received the script and is thinking", async () => {
