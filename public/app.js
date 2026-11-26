@@ -902,7 +902,7 @@ function storyboard() {
       </div>
       <div class="row">
         <label class="check"><input type="checkbox" data-bind="p.settings.storyboard" data-rerender="1" ${s.storyboard ? "checked" : ""}> Gerar os vídeos a partir do storyboard (keyframes)</label>
-        <label class="inline">Um quadro a cada <select data-bind="p.settings.frameEvery" data-type="number">${[2, 3, 4, 5, 10].map((n) => option(n, `${n} s`, s.frameEvery ?? 2)).join("")}</select></label>
+        <label class="inline">Quadros <select data-bind="p.settings.frameEvery" data-type="number">${[0, 2, 3, 4, 5, 10].map((n) => option(n, n === 0 ? "só a abertura de cada plano" : `a cada ${n} s`, s.frameEvery ?? 0)).join("")}</select></label>
       </div>
       ${s.storyboard ? `<p class="hint">Com o modo ligado, gerar o filme completa o storyboard de cada cena antes do vídeo dela.</p>` : ""}
     </section>

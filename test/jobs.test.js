@@ -911,7 +911,7 @@ test("storyboard: the AI describes frames, images are drawn and checked, and the
   assert.equal(images.length, 6, "fundo do plano + 4 quadros + 1 redesenho");
   assert.equal(images[0].prompt, "Empty cardboard square, wide shot.");
   assert.deepEqual([images[1].width, images[1].height], [1344, 768]);
-  assert.ok(images[1].imagePath.includes("fundo"), "o 1º quadro do plano parte do fundo do plano");
+  assert.equal(images[1].imagePath, undefined, "o 1º quadro do plano sai só do texto (o fundo do plano é o gabarito)");
   assert.ok(images[2].imagePath, "cada quadro parte do anterior");
   assert.ok(store.get(p.id).scenes[0].blocks[0].plate.imageId);
   // O 1º bloco do plano nasce dos quadros; o 2º (mesmo plano) continua o vídeo.
@@ -923,6 +923,41 @@ test("storyboard: the AI describes frames, images are drawn and checked, and the
   assert.equal(ltx.calls.filter((c) => c[0] === "extend").length, 1);
   assert.equal(selectedTake(scene.blocks[0]).mode, "storyboard");
   assert.equal(selectedTake(scene.blocks[1]).mode, "continue");
+});
+
+test("storyboard by default draws only each shot's opening and starts the video from it", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "takes-jobs-"));
+  const store = new Store(path.join(root, "lib"));
+  const ltx = new FakeLtx(fs.mkdtempSync(path.join(root, "ltx-")));
+  const places = [];
+  const reviewer = {
+    async planStoryboard({ layout }) {
+      return { blocks: layout.map((frames, index) => ({ index, plate: index === 0 ? "Square." : null, prompt: null, frames: frames.filter((f) => !f.shared).map((f) => ({ at: f.at, description: `frame ${index + 1}` })) })) };
+    },
+    async checkFrame({ placeFile, plate }) {
+      if (!plate) places.push(Boolean(placeFile));
+      return { pass: true, problems: [], reason: "ok", description: null, prompt: null, memory: { add: [], remove: [] }, model: "Fake" };
+    },
+  };
+  const queue = new JobQueue({ store, ltx, reviewer });
+  const p = store.create("Abertura");
+  store.edit(p.id, {
+    outputDir: path.join(root, "out"),
+    settings: { storyboard: true },
+    scenes: [{ id: "s", title: "Plano", blocks: [{ id: "a", prompt: "a", duration: 12 }, { id: "b", prompt: "b", duration: 4, continuity: "continue" }] }],
+  });
+  queue.addFilm(p.id);
+  await waitIdle(queue);
+  for (const j of queue.jobs) assert.equal(j.status, "complete", `${j.title}: ${j.error}`);
+  const scene = store.get(p.id).scenes[0];
+  assert.deepEqual(scene.blocks[0].frames.map((f) => f.at), [0]);
+  assert.deepEqual(scene.blocks[1].frames, []);
+  assert.deepEqual(places, [true], "a abertura é conferida contra o fundo do plano");
+  const videos = ltx.calls.filter((c) => c[0] === "generate").map((c) => c[1]);
+  assert.equal(videos.length, 1);
+  assert.ok(videos[0].imagePath, "a abertura vira a imagem inicial");
+  assert.equal(videos[0].keyframes, undefined);
+  assert.equal(ltx.calls.filter((c) => c[0] === "extend").length, 1);
 });
 
 test("a continuation gets the whole shot so far as context, not just the last seconds", { skip: !ffmpeg && "ffmpeg ausente", timeout: 60_000 }, async () => {

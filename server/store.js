@@ -30,7 +30,7 @@ export function clampDuration(value) {
 }
 
 export function defaultSettings() {
-  return { resolution: "720p", draftResolution: "360p", aspectRatio: "16:9", fps: 24, seed: null, audio: false, contextSeconds: 20, review: false, judge: false, retakes: 2, learn: true, storyboard: false, frameEvery: 2 };
+  return { resolution: "720p", draftResolution: "360p", aspectRatio: "16:9", fps: 24, seed: null, audio: false, contextSeconds: 20, review: false, judge: false, retakes: 2, learn: true, storyboard: false, frameEvery: 0 };
 }
 
 export function normalizeSettings(s = {}) {
@@ -55,7 +55,7 @@ export function normalizeSettings(s = {}) {
     learn: s.learn === undefined ? d.learn : Boolean(s.learn),
     // Storyboard: o vídeo de cada bloco passa pelos quadros aprovados (keyframes do LTX).
     storyboard: Boolean(s.storyboard),
-    frameEvery: [2, 3, 4, 5, 10].includes(Number(s.frameEvery)) ? Number(s.frameEvery) : d.frameEvery,
+    frameEvery: [0, 2, 3, 4, 5, 10].includes(Number(s.frameEvery)) ? Number(s.frameEvery) : d.frameEvery,
   };
 }
 
@@ -98,7 +98,11 @@ function keepKeyframe(start, old, sameOpening = true) {
 // (no máximo 10, o limite do LTX).
 // Num bloco que continua o mesmo plano, o primeiro quadro é o último do bloco anterior (`shared`).
 export const MAX_FRAMES = 10; // limite de keyframes do LTX por geração
-export function frameTimes(block, index, every = 2) {
+export function frameTimes(block, index, every = 0) {
+  // `every` 0: só o quadro de abertura de cada plano (o padrão). O Z-Image não mantém o mesmo
+  // cenário entre quadros com poses diferentes, e quadros quase iguais travariam o movimento:
+  // a abertura ancora personagens, lugar e estado, e o LTX anima a partir dela.
+  if (!every) return index === 0 || block.continuity === "cut" ? [{ at: 0, shared: false }] : [];
   const duration = Number(block.duration) || 5;
   let times = [0];
   for (let t = every; t < duration - every / 2; t += every) times.push(t);

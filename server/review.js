@@ -365,7 +365,7 @@ export class ContinuityReviewer {
 
   // Confere um quadro do storyboard. Devolve { pass, problems, reason, description?, prompt?, memory }.
   // `plate`: confere o fundo do plano (lugar vazio) em vez de um quadro com personagens.
-  async checkFrame({ project, scene, index, frame, file, prevFile, work, signal, plate = false }) {
+  async checkFrame({ project, scene, index, frame, file, prevFile, placeFile = null, work, signal, plate = false }) {
     const block = scene.blocks[index];
     const m = this.parts(work, signal);
     m.text(
@@ -380,6 +380,7 @@ export class ContinuityReviewer {
       ].join("\n"),
     );
     if (prevFile) await m.image("Previous storyboard frame:", prevFile);
+    if (placeFile) await m.image("Approved plate of this shot (the place from this angle; the frame should read as this place, the exact layout may differ):", placeFile);
     await m.image("Frame to check:", file);
     const bg = project.backgrounds.find((b) => b.id === scene.backgroundId);
     if (bg?.image) await m.image(`Background "${bg.name}" (the place, original state):`, bg.image);

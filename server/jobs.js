@@ -851,7 +851,7 @@ export class JobQueue {
     // primeiro keyframe.
     const shotFirst = index === 0 || block.continuity === "cut";
     const board = s.storyboard ? storyboardFrames(project, scene, index) : [];
-    const boardReady = board.length >= 2 && board.every((f) => f.file);
+    const boardReady = board.length >= 1 && board.every((f) => f.file);
     if (s.storyboard && shotFirst && !boardReady) throw Object.assign(fatal(`O bloco ${index + 1} ainda não tem o storyboard completo. Gere o storyboard da cena antes do vídeo.`), { pending: true });
     const useBoard = s.storyboard && boardReady && (shotFirst || (block.continuity === "frame" && prev));
     const mode = useBoard ? "storyboard" : index === 0 ? "start" : block.continuity;
@@ -914,8 +914,10 @@ export class JobQueue {
         return { imagePath: f.file, frameIndex: at, strength: 1 };
       });
       inflight.usedImage = board[0].file;
+      // Um quadro só (a abertura do plano): imagem inicial comum; mais de um: keyframes.
+      const pinned = keyframes.length > 1 ? { keyframes } : { imagePath: board[0].file };
       inflight.request = {
-        prompt: videoPrompt(project, scene, block, { mode }),
+        prompt: videoPrompt(project, scene, block, keyframes.length > 1 ? { mode } : { mode: "image", hasImage: true }),
         promptProvenance: "enhanced",
         negativePrompt: project.negativePrompt || "",
         resolution,
@@ -925,9 +927,9 @@ export class JobQueue {
         audio: s.audio,
         aspectRatio: s.aspectRatio,
         ...(s.seed != null ? { seed: (s.seed + index + retake * 7919) % 2147483647 } : {}),
-        keyframes,
+        ...pinned,
       };
-      result = await this.withLtx(job, `${label}: gerando no LTX pelo storyboard (${keyframes.length} quadros)`, inflight, () => this.ltx.generateVideo(inflight.request, { signal }));
+      result = await this.withLtx(job, `${label}: gerando no LTX pelo storyboard (${keyframes.length === 1 ? "abertura do plano" : `${keyframes.length} quadros`})`, inflight, () => this.ltx.generateVideo(inflight.request, { signal }));
     } else if (mode === "continue") {
       job.phase = `${label}: preparando a continuação`;
       this.changed();
@@ -1243,7 +1245,7 @@ export class JobQueue {
     let project = this.store.get(job.projectId);
     requireOutput(project);
     let scene = findScene(project, job.sceneId);
-    const every = project.settings.frameEvery ?? 2;
+    const every = project.settings.frameEvery ?? 0;
     const layout = scene.blocks.map((b, i) => frameTimes(b, i, every));
     const matches = (frames, want) => frames?.length === want.length && want.every((w, k) => Math.abs(frames[k].at - w.at) < 0.01 && frames[k].shared === w.shared && (w.shared || frames[k].description));
     if (!job.planned && (job.redo || scene.blocks.some((b, i) => !matches(b.frames, layout[i])))) {
@@ -1358,9 +1360,13 @@ export class JobQueue {
     const board = storyboardFrames(project, scene, index);
     const prev = frameIndex > 0 ? board[frameIndex - 1] : index > 0 ? storyboardFrames(project, scene, index - 1).at(-1) : null;
     const block = scene.blocks[index];
-    const plate = frameIndex === 0 ? this.plateFile(project, scene.blocks[shotStart(scene, index)]) : null;
-    // 1º quadro de um plano: parte do fundo ideal do plano (e não do quadro de outro ângulo).
-    if (plate && (index === 0 || block.continuity === "cut")) return { file: plate, strength: 0.65, prev: prev?.file ?? null };
+    // 1º quadro de um plano: só pelo texto. Partindo do fundo do plano, o Z-Image ou mantém o
+    // fundo e erra os personagens (força baixa) ou acerta os personagens e muda o lugar (alta).
+    // O fundo do plano vira o gabarito do lugar na conferência.
+    if (frameIndex === 0 && (index === 0 || block.continuity === "cut")) {
+      const plate = this.plateFile(project, scene.blocks[shotStart(scene, index)]);
+      return { file: null, strength: 0, prev: prev?.file ?? null, place: plate };
+    }
     if (prev?.file) return { file: prev.file, strength: frameIndex === 0 && block.continuity === "cut" ? 0.85 : 0.6, prev: prev.file };
     if (index === 0 && scene.start?.kind === "previous") {
       const at = project.scenes.findIndex((x) => x.id === scene.id);
@@ -1410,7 +1416,7 @@ export class JobQueue {
         const sc = findScene(fresh, job.sceneId);
         const work = path.join(sceneFolder(fresh, sc), ".trabalho");
         await fsp.mkdir(work, { recursive: true });
-        v = await this.reviewer.checkFrame({ project: fresh, scene: sc, index, frame: sc.blocks[index].frames[fi], file, prevFile: ref.prev, work, signal });
+        v = await this.reviewer.checkFrame({ project: fresh, scene: sc, index, frame: sc.blocks[index].frames[fi], file, prevFile: ref.prev, placeFile: ref.place ?? null, work, signal });
       } catch (error) {
         if (error.code === "ABORTED" || signal.aborted) return;
         (job.warnings ??= []).push(`Quadro ${frame.at} s do bloco ${index + 1}: a conferência falhou (${error.message}); ficou sem conferir.`);
